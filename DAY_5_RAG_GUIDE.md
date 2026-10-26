@@ -124,7 +124,27 @@ When an LLM is asked a question whose answer does not exist in the retrieved doc
 
 ---
 
-## 7. The College Examination RAG Project Overview
+## 7. Multi-Turn Conversational RAG & Memory ($k \ge 6$)
+
+In real-world chat interfaces, users rarely ask standalone, isolated questions. Instead, they ask follow-up questions containing pronouns and implicit references:
+- Turn 1: *"Compare student 1RV21CS028 and 1RV21CS007"*
+- Turn 2: *"What are their respective names?"* (implicit pronoun reference to Turn 1 candidates)
+- Turn 3: *"Who scored higher in semester 5?"*
+
+### Core Architectural Components:
+1. **Conversation History Buffer ($k \ge 6$)**:
+   - The application retains the last $k$ conversation turns (e.g. 6 user questions + 6 assistant answers).
+   - Formatted into readable turns (`User:` / `Assistant:`) and injected directly into the LLM prompt.
+2. **Context-Aware Entity & Pronoun Resolution**:
+   - When a user query lacks an explicit USN or identifier but contains pronouns (*they*, *their*, *both*, *he*, *she*), the router extracts the most recently discussed entities from the conversation history buffer.
+   - Authoritative records for those entities are retrieved and supplied to the context.
+3. **Disambiguation of Identical Names**:
+   - In large academic cohorts, multiple students may share identical names (e.g., two students named *Divya Bhat*).
+   - The system pairs names with unique identifiers (USN: `1RV21CS028` vs `1RV21CS007`) and explicit disambiguation alerts to eliminate LLM confusion.
+
+---
+
+## 8. The College Examination RAG Project Overview
 
 ### Project Files:
 1. `generate_college_data.py`:
@@ -141,6 +161,7 @@ When an LLM is asked a question whose answer does not exist in the retrieved doc
    - Exposes `retriever` and `retrieve_with_sources()` with citations.
 4. `main.py`:
    - Terminal interactive assistant powered by `llama3.2:3b`.
+   - Multi-turn conversational memory buffer ($k \ge 6$) with pronoun resolution.
    - Hybrid routing: answers both exact calculation requests and qualitative semantic questions with citations.
 
 ---

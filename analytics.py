@@ -75,6 +75,14 @@ def find_student(identifier: str) -> Optional[Dict[str, Any]]:
         
     return None
 
+def find_students_by_name(name: str) -> List[Dict[str, Any]]:
+    """Find all students matching a full or partial name (handles name collisions)."""
+    students = _load_data()
+    q = name.strip().lower()
+    if not q:
+        return []
+    return [s for s in students if q in s["name"].lower()]
+
 def get_student_scorecard(identifier: str) -> Dict[str, Any]:
     """Get full 8-semester scorecard and analytics for a student."""
     student = find_student(identifier)
@@ -232,15 +240,16 @@ def compare_students(id1: str, id2: str) -> Dict[str, Any]:
             "semester": f"Sem {sm}",
             f"{st1['name']} ({st1['usn']})": sg1,
             f"{st2['name']} ({st2['usn']})": sg2,
-            "higher": st1["name"] if sg1 > sg2 else (st2["name"] if sg2 > sg1 else "Tie"),
+            "higher": f"{st1['name']} ({st1['usn']})" if sg1 > sg2 else (f"{st2['name']} ({st2['usn']})" if sg2 > sg1 else "Tie"),
             "difference": abs(diff)
         })
         
+    winner = f"{st1['name']} ({st1['usn']})" if st1["cgpa"] > st2["cgpa"] else (f"{st2['name']} ({st2['usn']})" if st2["cgpa"] > st1["cgpa"] else "Tie")
     return {
-        "student1": {"usn": st1["usn"], "name": st1["name"], "rank": st1["rank"], "cgpa": st1["cgpa"], "standing": st1["standing"]},
-        "student2": {"usn": st2["usn"], "name": st2["name"], "rank": st2["rank"], "cgpa": st2["cgpa"], "standing": st2["standing"]},
+        "student1": {"usn": st1["usn"], "name": st1["name"], "rank": st1["rank"], "cgpa": st1["cgpa"], "standing": st1["standing"], "backlogs": st1["backlogs"], "total_credits": st1["total_credits"]},
+        "student2": {"usn": st2["usn"], "name": st2["name"], "rank": st2["rank"], "cgpa": st2["cgpa"], "standing": st2["standing"], "backlogs": st2["backlogs"], "total_credits": st2["total_credits"]},
         "cgpa_difference": round(abs(st1["cgpa"] - st2["cgpa"]), 2),
-        "cgpa_winner": st1["name"] if st1["cgpa"] > st2["cgpa"] else (st2["name"] if st2["cgpa"] > st1["cgpa"] else "Tie"),
+        "cgpa_winner": winner,
         "semesters_comparison": sem_comparison
     }
 
