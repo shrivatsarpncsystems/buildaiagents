@@ -159,12 +159,12 @@ if __name__ == "__main__":
         print("\nSearching PDF transcripts and computing analytics...")
         context_str, citations_str = route_and_build_context(user_input)
 
-        response = chain.invoke({
+        print("\n" + "-" * 78)
+        # Real-time token streaming for instantaneous responsive terminal experience
+        for chunk in chain.stream({
             "context": context_str,
             "citations": citations_str,
             "question": user_input
-        })
-
-        print("\n" + "-" * 78)
-        print(response.strip())
-        print("-" * 78 + "\n")
+        }):
+            print(chunk, end="", flush=True)
+        print("\n" + "-" * 78 + "\n")
