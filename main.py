@@ -118,7 +118,23 @@ def route_and_build_context(user_query: str):
             additional_data += f"Candidates with Backlogs: {batch_stats['candidates_with_backlogs']}\n"
             additional_data += f"Semester SGPA Averages: {json.dumps(batch_stats['semester_sgpa_averages'])}\n"
 
-    # 4. Check for Comparison between Two Students (e.g. "compare 1RV21CS001 and 1RV21CS002")
+    # 4. Check for Failed Students / Backlogs Query (e.g. "list students who failed in sem 1")
+    is_fail_query = any(keyword in q_lower for keyword in ["fail", "failed", "backlog", "backlogs", "arrear", "arrears"])
+    if is_fail_query:
+        sem_match = re.search(r"(?:sem|semester)\s*([1-8])", q_lower)
+        target_sem = int(sem_match.group(1)) if sem_match else None
+        
+        fail_data = analytics.get_failed_students(semester=target_sem)
+        if target_sem:
+            additional_data += f"\n[OFFICIAL CANDIDATES WHO FAILED IN SEMESTER {target_sem} ({fail_data['count']} Students)]:\n"
+            for st in fail_data["students"]:
+                additional_data += f"• {st['name']} ({st['usn']}) - SGPA: {st['sgpa']} | Failed in: {', '.join(st['failed_subjects'])}\n"
+        else:
+            additional_data += f"\n[OFFICIAL CANDIDATES WITH ACTIVE BACKLOGS ({fail_data['count']} Students)]:\n"
+            for st in fail_data["students"]:
+                additional_data += f"• {st['name']} ({st['usn']}) - CGPA: {st['cgpa']} | Backlogs: {st['backlogs_count']} | Standing: {st['standing']}\n"
+
+    # 5. Check for Comparison between Two Students (e.g. "compare 1RV21CS001 and 1RV21CS002")
     compare_matches = re.findall(r"1rv21cs\d{3}", q_lower)
     if len(compare_matches) >= 2:
         comp_res = analytics.compare_students(compare_matches[0].upper(), compare_matches[1].upper())
@@ -130,7 +146,7 @@ def route_and_build_context(user_query: str):
 
     # 5. Semantic Vector Retrieval from PDF via Chroma (for student transcripts, curriculum, etc.)
     pdf_context = ""
-    if not is_policy_query:
+    if not is_policy_query and not is_fail_query:
         pdf_context, citations = retrieve_with_sources(user_query, k=2)
         citations_list.extend(citations)
 

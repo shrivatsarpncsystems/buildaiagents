@@ -274,3 +274,44 @@ def get_performance_list(category: str, limit: int = 20) -> Dict[str, Any]:
             "backlogs": s["backlogs"]
         } for s in matched[:limit]]
     }
+
+def get_failed_students(semester: Optional[int] = None) -> Dict[str, Any]:
+    """Retrieve list of students who failed / have backlogs in a specific semester or overall."""
+    students = _load_data()
+    failed_students = []
+    
+    if semester is not None and 1 <= semester <= 8:
+        sem_key = str(semester)
+        for s in students:
+            sem_data = s["semesters"][sem_key]
+            failed_subs = [sub for sub in sem_data["subjects"] if sub["grade"] == "F"]
+            if failed_subs:
+                failed_students.append({
+                    "usn": s["usn"],
+                    "name": s["name"],
+                    "semester": semester,
+                    "sgpa": sem_data["sgpa"],
+                    "overall_cgpa": s["cgpa"],
+                    "failed_subjects": [f"{sub['name']} ({sub['marks']}/100, Grade: F)" for sub in failed_subs]
+                })
+        return {
+            "type": "semester_failed_students",
+            "semester": semester,
+            "count": len(failed_students),
+            "students": failed_students
+        }
+    else:
+        for s in students:
+            if s["backlogs"] > 0:
+                failed_students.append({
+                    "usn": s["usn"],
+                    "name": s["name"],
+                    "cgpa": s["cgpa"],
+                    "backlogs_count": s["backlogs"],
+                    "standing": s["standing"]
+                })
+        return {
+            "type": "overall_failed_students",
+            "count": len(failed_students),
+            "students": failed_students
+        }
