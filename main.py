@@ -5,8 +5,8 @@ from langchain_core.prompts import ChatPromptTemplate
 from vector import retriever, retrieve_with_sources
 import analytics
 
-# 1. Initialize local LLM
-model = OllamaLLM(model="llama3.2:3b", temperature=0.2)
+# 1. Initialize local LLM with zero temperature for deterministic, strictly grounded responses
+model = OllamaLLM(model="llama3.2:3b", temperature=0.0)
 
 # 2. Strict RAG Prompt Template with Grounding, Citations & Handling Uncontextualized Queries
 template = """You are the Official Academic AI Assistant for Apex Institute of Technology (Department of Computer Science & Engineering).
@@ -23,12 +23,13 @@ SOURCE CITATIONS AVAILABLE:
 USER QUESTION: {question}
 
 STRICT INSTRUCTIONS FOR YOUR RESPONSE:
-1. OFFICIAL CALCULATIONS PRECEDENCE: If "OFFICIAL AUTONOMOUS DATABASE CALCULATIONS" are provided in the context, they are the exact verified statistics across all 200 students. You MUST use those exact names, USNs, ranks, and numbers as the authoritative truth.
-2. FACTUAL GROUNDING: Rely strictly and accurately on the provided ACADEMIC CONTEXT. Do NOT invent student marks, ranks, or policies.
-3. SOURCE CITATIONS: Always include clear source citations at the end of your answer referencing the specific document and page numbers from the citations provided (e.g., "[Source: college_exam_results.pdf, Page X]").
-4. HANDLING QUESTIONS WITHOUT SUPPORTING CONTEXT: If the user's question cannot be answered from the provided records (e.g. asking about hostel fees, sports, cafeteria, or an unlisted student), explicitly state:
+1. STRICT RELEVANCE: Answer ONLY the specific question asked by the user. Do NOT include unprompted student transcripts, unsolicited SGPA/CGPA calculations, random student names, or merit rankings unless the user explicitly requested them.
+2. OFFICIAL CALCULATIONS PRECEDENCE: If "OFFICIAL AUTONOMOUS DATABASE CALCULATIONS" or "OFFICIAL ACADEMIC REGULATION & GRADING POLICY" are provided in the context, they are the authoritative exact truth. You MUST use those exact details, ranks, and numbers.
+3. FACTUAL GROUNDING: Rely strictly and accurately on the provided ACADEMIC CONTEXT. Do NOT invent student marks, ranks, or policies.
+4. SOURCE CITATIONS: Always include clear source citations at the end of your answer referencing the specific document and page numbers from the citations provided (e.g., "[Source: college_exam_results.pdf, Page X]").
+5. HANDLING QUESTIONS WITHOUT SUPPORTING CONTEXT: If the user's question cannot be answered from the provided records (e.g. asking about hostel fees, sports, cafeteria, or an unlisted student), explicitly state:
    "I do not have supporting context in the official college examination records to answer this question."
-5. PRESENTATION: Present numbers, grades, SGPA/CGPA, and rankings clearly using clean bullet points, tables, or highlighted summaries.
+6. CONCISE PRESENTATION: Keep your response direct, structured, and focused without extra conversational filler.
 
 OFFICIAL RESPONSE:"""
 
@@ -45,6 +46,15 @@ def route_and_build_context(user_query: str):
     q_lower = user_query.lower().strip()
     additional_data = ""
     citations_list = []
+
+    # 0. Check for Academic Regulations & Grading Scheme Policy
+    is_policy_query = any(w in q_lower for w in ["grading", "grade policy", "grading policy", "criteria for grade", "regulation", "regulations", "grading scheme", "passing criteria", "award criteria", "grade o", "grade a+"])
+    if is_policy_query:
+        from vector import vector_store
+        p1 = vector_store.get(where={"page": 1})
+        if p1 and p1["documents"]:
+            additional_data += f"\n[OFFICIAL ACADEMIC REGULATION & GRADING POLICY]:\n{p1['documents'][0]}\n"
+            citations_list.append("[Source: college_exam_results.pdf, Page 1]")
 
     # 1. Check for Student USN or Name Lookup
     usn_match = re.search(r"1rv21cs\d{3}", q_lower)
@@ -118,9 +128,11 @@ def route_and_build_context(user_query: str):
             additional_data += f"{comp_res['student2']['name']}: Rank #{comp_res['student2']['rank']}, CGPA {comp_res['student2']['cgpa']}\n"
             additional_data += f"CGPA Difference: {comp_res['cgpa_difference']} (Higher: {comp_res['cgpa_winner']})\n"
 
-    # 5. Semantic Vector Retrieval from PDF via Chroma (k=2 for fast responsive local LLM inference)
-    pdf_context, citations = retrieve_with_sources(user_query, k=2)
-    citations_list.extend(citations)
+    # 5. Semantic Vector Retrieval from PDF via Chroma (for student transcripts, curriculum, etc.)
+    pdf_context = ""
+    if not is_policy_query:
+        pdf_context, citations = retrieve_with_sources(user_query, k=2)
+        citations_list.extend(citations)
 
     # Combine calculation data + semantic PDF passages
     full_context = ""
