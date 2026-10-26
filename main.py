@@ -23,11 +23,12 @@ SOURCE CITATIONS AVAILABLE:
 USER QUESTION: {question}
 
 STRICT INSTRUCTIONS FOR YOUR RESPONSE:
-1. FACTUAL GROUNDING: Rely strictly and accurately on the provided ACADEMIC CONTEXT and calculations. Do NOT invent student marks, ranks, or policies.
-2. SOURCE CITATIONS: Always include clear source citations at the end of your answer referencing the specific document and page numbers from the citations provided (e.g., "[Source: college_exam_results.pdf, Page X]").
-3. HANDLING QUESTIONS WITHOUT SUPPORTING CONTEXT: If the user's question cannot be answered from the provided records (e.g. asking about hostel fees, sports, cafeteria, or an unlisted student), explicitly state:
+1. OFFICIAL CALCULATIONS PRECEDENCE: If "OFFICIAL AUTONOMOUS DATABASE CALCULATIONS" are provided in the context, they are the exact verified statistics across all 200 students. You MUST use those exact names, USNs, ranks, and numbers as the authoritative truth.
+2. FACTUAL GROUNDING: Rely strictly and accurately on the provided ACADEMIC CONTEXT. Do NOT invent student marks, ranks, or policies.
+3. SOURCE CITATIONS: Always include clear source citations at the end of your answer referencing the specific document and page numbers from the citations provided (e.g., "[Source: college_exam_results.pdf, Page X]").
+4. HANDLING QUESTIONS WITHOUT SUPPORTING CONTEXT: If the user's question cannot be answered from the provided records (e.g. asking about hostel fees, sports, cafeteria, or an unlisted student), explicitly state:
    "I do not have supporting context in the official college examination records to answer this question."
-4. PRESENTATION: Present numbers, grades, SGPA/CGPA, and rankings clearly using clean bullet points, tables, or highlighted summaries.
+5. PRESENTATION: Present numbers, grades, SGPA/CGPA, and rankings clearly using clean bullet points, tables, or highlighted summaries.
 
 OFFICIAL RESPONSE:"""
 
@@ -45,36 +46,43 @@ def route_and_build_context(user_query: str):
     additional_data = ""
     citations_list = []
 
-    # 1. Check for Student USN (e.g. 1RV21CS042)
+    # 1. Check for Student USN or Name Lookup
     usn_match = re.search(r"1rv21cs\d{3}", q_lower)
+    target_student = None
     if usn_match:
-        usn = usn_match.group(0).upper()
-        sc = analytics.get_student_scorecard(usn)
-        if "error" not in sc:
-            additional_data += f"\n[CALCULATED SCORECARD FOR {usn}]:\n"
-            additional_data += f"Student Name: {sc['name']} | Rank: #{sc['rank']} of 200\n"
-            additional_data += f"Cumulative CGPA: {sc['cgpa']:.2f} / 10.0 | Academic Standing: {sc['standing']}\n"
-            additional_data += f"Total Credits Completed: {sc['total_credits']} | Active Backlogs: {sc['backlogs']}\n"
-            additional_data += f"SGPA Progression: {json.dumps(sc['sgpa_by_semester'])}\n"
-            additional_data += f"Best Semester: {sc['best_semester']} | Lowest Semester: {sc['lowest_semester']}\n"
-            additional_data += f"Average Mark across 8 semesters: {sc['average_marks']}/100\n"
-            additional_data += f"Highest Subject Score: {sc['highest_subject']}\n"
+        target_student = analytics.find_student(usn_match.group(0).upper())
+    elif not any(w in q_lower for w in ["top", "average", "class", "policy", "grade", "menu", "fee", "compare"]):
+        # Try finding by name if query looks like a person's name
+        target_student = analytics.find_student(user_query)
 
-    # 2. Check for Top Scorers / Rank List
+    if target_student:
+        sc = analytics.get_student_scorecard(target_student["usn"])
+        if "error" not in sc:
+            additional_data += f"\n[OFFICIAL SCORECARD FOR {sc['name']} ({sc['usn']})]:\n"
+            additional_data += f"Rank: #{sc['rank']} of 200 Candidates | Standing: {sc['standing']}\n"
+            additional_data += f"Cumulative CGPA: {sc['cgpa']:.2f} / 10.0 | Active Backlogs: {sc['backlogs']}\n"
+            additional_data += f"Total Credits: {sc['total_credits']} | 8-Semester Marks Average: {sc['average_marks']}/100\n"
+            additional_data += f"SGPA by Semester: {json.dumps(sc['sgpa_by_semester'])}\n"
+            additional_data += f"Best Semester: {sc['best_semester']} | Lowest: {sc['lowest_semester']}\n"
+            additional_data += f"Highest Subject: {sc['highest_subject']} | Lowest: {sc['lowest_subject']}\n"
+
+    # 2. Check for Top Scorers / Rank List (Support variable N e.g. top 3, top 5, top 10)
     if any(keyword in q_lower for keyword in ["top scorer", "topper", "toppers", "rank 1", "highest cgpa", "merit list", "first rank"]):
-        # Check if asking for specific semester
         sem_match = re.search(r"(?:sem|semester)\s*([1-8])", q_lower)
         target_sem = int(sem_match.group(1)) if sem_match else None
         
-        top_data = analytics.get_top_scorers(n=5, semester=target_sem)
+        num_match = re.search(r"(?:top|first)\s*(\d+)", q_lower)
+        n_count = int(num_match.group(1)) if num_match else 5
+        
+        top_data = analytics.get_top_scorers(n=n_count, semester=target_sem)
         if target_sem:
-            additional_data += f"\n[OFFICIAL TOP 5 SCORERS - SEMESTER {target_sem}]:\n"
+            additional_data += f"\n[OFFICIAL TOP {n_count} SCORERS - SEMESTER {target_sem}]:\n"
             for st in top_data["top_students"]:
-                additional_data += f"Rank {st['rank']}: {st['name']} ({st['usn']}) - SGPA: {st['sgpa']} (Overall CGPA: {st['overall_cgpa']})\n"
+                additional_data += f"Rank #{st['rank']}: {st['name']} ({st['usn']}) - SGPA: {st['sgpa']} (Cumulative CGPA: {st['overall_cgpa']})\n"
         else:
-            additional_data += "\n[OFFICIAL MERIT ROLL - TOP 5 BATCH SCORERS BY CGPA]:\n"
+            additional_data += f"\n[OFFICIAL MERIT ROLL - TOP {n_count} BATCH SCORERS BY CGPA]:\n"
             for st in top_data["top_students"]:
-                additional_data += f"Rank {st['rank']}: {st['name']} ({st['usn']}) - CGPA: {st['cgpa']} ({st['standing']})\n"
+                additional_data += f"Rank #{st['rank']}: {st['name']} ({st['usn']}) - CGPA: {st['cgpa']} ({st['standing']})\n"
 
     # 3. Check for Batch / Class Average & Statistics
     if any(keyword in q_lower for keyword in ["average", "class average", "batch average", "pass percentage", "overall stats", "statistics"]):
@@ -113,7 +121,7 @@ def route_and_build_context(user_query: str):
     # Combine calculation data + semantic PDF passages
     full_context = ""
     if additional_data:
-        full_context += f"--- CALCULATED DATABASE METRICS ---\n{additional_data}\n\n"
+        full_context += f"--- OFFICIAL AUTONOMOUS DATABASE CALCULATIONS (EXACT & VERIFIED ACROSS ALL 200 STUDENTS) ---\n{additional_data}\n\n"
         citations_list.append("[Source: students_results.json / Autonomous Examination Database]")
         
     full_context += f"--- RETRIEVED PDF TRANSCRIPT EXCERPTS ---\n{pdf_context}"
