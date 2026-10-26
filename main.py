@@ -128,11 +128,11 @@ def route_and_build_context(user_query: str):
         if target_sem:
             additional_data += f"\n[OFFICIAL CANDIDATES WHO FAILED IN SEMESTER {target_sem} ({fail_data['count']} Students)]:\n"
             for st in fail_data["students"]:
-                additional_data += f"• {st['name']} ({st['usn']}) - SGPA: {st['sgpa']} | Failed in: {', '.join(st['failed_subjects'])}\n"
+                additional_data += f"- {st['name']} ({st['usn']}) - SGPA: {st['sgpa']} | Failed in: {', '.join(st['failed_subjects'])}\n"
         else:
             additional_data += f"\n[OFFICIAL CANDIDATES WITH ACTIVE BACKLOGS ({fail_data['count']} Students)]:\n"
             for st in fail_data["students"]:
-                additional_data += f"• {st['name']} ({st['usn']}) - CGPA: {st['cgpa']} | Backlogs: {st['backlogs_count']} | Standing: {st['standing']}\n"
+                additional_data += f"- {st['name']} ({st['usn']}) - CGPA: {st['cgpa']} | Backlogs: {st['backlogs_count']} | Standing: {st['standing']}\n"
 
     # 5. Check for Comparison between Two Students (e.g. "compare 1RV21CS001 and 1RV21CS002")
     compare_matches = re.findall(r"1rv21cs\d{3}", q_lower)
