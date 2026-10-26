@@ -66,8 +66,12 @@ def route_and_build_context(user_query: str):
             additional_data += f"Best Semester: {sc['best_semester']} | Lowest: {sc['lowest_semester']}\n"
             additional_data += f"Highest Subject: {sc['highest_subject']} | Lowest: {sc['lowest_subject']}\n"
 
-    # 2. Check for Top Scorers / Rank List (Support variable N e.g. top 3, top 5, top 10)
-    if any(keyword in q_lower for keyword in ["top scorer", "topper", "toppers", "rank 1", "highest cgpa", "merit list", "first rank"]):
+    # 2. Check for Top Scorers / Rank List (Support variable N e.g. top 3, top 5, top 10, toppers)
+    is_top_query = bool(
+        re.search(r"top\s*(?:\d+)?\s*(?:scorer|scorers|student|students|candidate|candidates|rank|topper|toppers|batch|cgpa)", q_lower)
+        or any(keyword in q_lower for keyword in ["topper", "toppers", "rank 1", "highest cgpa", "merit list", "first rank", "highest score"])
+    )
+    if is_top_query:
         sem_match = re.search(r"(?:sem|semester)\s*([1-8])", q_lower)
         target_sem = int(sem_match.group(1)) if sem_match else None
         
