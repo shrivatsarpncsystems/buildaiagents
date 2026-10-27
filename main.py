@@ -5,6 +5,8 @@ from langchain_core.prompts import ChatPromptTemplate
 from vector import retriever, retrieve_with_sources
 import analytics
 
+from typing import Optional
+
 # 1. Initialize local LLM with zero temperature for deterministic, strictly grounded responses
 model = OllamaLLM(model="llama3.2:3b", temperature=0.0)
 
@@ -13,30 +15,31 @@ template = """You are the Official Academic AI Assistant for Apex Institute of T
 Your role is to assist students, faculty, and administrators with examination records, transcripts, SGPA/CGPA calculations, merit lists, and academic regulations.
 
 ==================================================
-PREVIOUS CONVERSATION HISTORY (Last Exchanges):
-{chat_history}
-==================================================
-
-==================================================
-ACADEMIC CONTEXT & DATA:
+ACADEMIC CONTEXT & DATA (OFFICIAL DATABASE TRUTH):
 {context}
 
 SOURCE CITATIONS AVAILABLE:
 {citations}
 ==================================================
 
+==================================================
+PREVIOUS CONVERSATION HISTORY (FOR CONTEXT & PRONOUN RESOLUTION ONLY):
+{chat_history}
+==================================================
+
 USER QUESTION: {question}
 
 STRICT INSTRUCTIONS FOR YOUR RESPONSE:
-1. CONVERSATION CONTEXT & PRONOUN RESOLUTION: Use the PREVIOUS CONVERSATION HISTORY to resolve pronouns (such as "they", "their", "thei", "them", "both", "he", "she", "these students", "the two students") or follow-up questions referencing students, subjects, or semesters previously discussed.
-2. STRICT RELEVANCE: Answer ONLY the specific question asked by the user. Do NOT include unprompted student transcripts, unsolicited SGPA/CGPA calculations, random student names, or merit rankings unless the user explicitly requested them.
-3. OFFICIAL CALCULATIONS PRECEDENCE: If "OFFICIAL AUTONOMOUS DATABASE CALCULATIONS" or "OFFICIAL ACADEMIC REGULATION & GRADING POLICY" are provided in the context, they are the authoritative exact truth. You MUST use those exact details, ranks, and numbers.
-4. FACTUAL GROUNDING: Rely strictly and accurately on the provided ACADEMIC CONTEXT and CONVERSATION HISTORY. Do NOT invent student marks, ranks, or policies.
-5. IDENTICAL NAMES / DISAMBIGUATION: If multiple students share the same name (e.g., two students named Divya Bhat), always distinguish them explicitly by their USN (e.g. 1RV21CS028 vs 1RV21CS007) and respective ranks.
-6. SOURCE CITATIONS: Always include clear source citations at the end of your answer referencing the specific document and page numbers from the citations provided (e.g., "[Source: college_exam_results.pdf, Page X]").
-7. HANDLING QUESTIONS WITHOUT SUPPORTING CONTEXT: If the user's question cannot be answered from the provided records or conversation history (e.g. asking about hostel fees, sports, cafeteria, or an unlisted student), explicitly state:
+1. ABSOLUTELY NO META-TALK: NEVER start responses with "Based on the provided conversation history", "Based on the academic context", "Based on available information", "Please note that the conversation history...", or conversational disclaimers. Start DIRECTLY with the answer.
+2. OFFICIAL CALCULATIONS PRECEDENCE: The ACADEMIC CONTEXT contains exact, verified calculations across all 200 students. You MUST use those exact details, marks, ranks, and numbers.
+3. CONVERSATION CONTEXT & PRONOUN RESOLUTION: Use the PREVIOUS CONVERSATION HISTORY solely to resolve pronouns (such as "they", "their", "thei", "them", "both", "he", "she", "these students", "the two students") or follow-up questions referencing students, subjects, or semesters previously discussed.
+4. DIRECT & ACCURATE ANSWER FORMATTING:
+   - For semester toppers (e.g. "top 10 students in 3rd semester"), present the ranked list strictly by their Semester SGPA, showing Rank, Name, USN, and SGPA.
+   - For failed students or their marks, ALWAYS list the student name, USN, semester SGPA, and each failed course along with their exact marks obtained out of 100 and Grade F (e.g. "Deepak Reddy (1RV21CS180) - Engineering Chemistry: 30/100 (Grade: F)").
+   - If multiple candidates share the same name (e.g. Divya Bhat), always distinguish them explicitly by USN and rank.
+5. STRICT GROUNDING & REFUSAL: Do NOT invent student marks, ranks, or policies. If the question cannot be answered from the provided records or conversation history (e.g. hostel fees, sports, cafeteria menu), explicitly state:
    "I do not have supporting context in the official college examination records to answer this question."
-8. CONCISE PRESENTATION: Keep your response direct, structured, and focused without extra conversational filler.
+6. CITATIONS: Include the source citation at the end of your answer (e.g. "[Source: students_results.json / Autonomous Examination Database]").
 
 OFFICIAL RESPONSE:"""
 
@@ -44,6 +47,58 @@ prompt = ChatPromptTemplate.from_template(template)
 chain = prompt | model
 
 MAX_HISTORY_TURNS = 6  # Maintains at least k=6 turns of conversation memory
+
+WORD_TO_NUM = {
+    "first": 1, "1st": 1, "one": 1, "1": 1,
+    "second": 2, "2nd": 2, "two": 2, "2": 2,
+    "third": 3, "3rd": 3, "three": 3, "3": 3,
+    "fourth": 4, "4th": 4, "four": 4, "4": 4,
+    "fifth": 5, "5th": 5, "five": 5, "5": 5,
+    "sixth": 6, "6th": 6, "six": 6, "6": 6,
+    "seventh": 7, "7th": 7, "seven": 7, "7": 7,
+    "eighth": 8, "8th": 8, "eight": 8, "8": 8,
+}
+
+def extract_semester(text: str) -> Optional[int]:
+    """
+    Robust semester extractor supporting ordinals (3rd, third), words,
+    misspellings (semister, semster), prefixes (sem 3, 3rd sem), and suffixes.
+    """
+    if not text:
+        return None
+    t = text.lower()
+    
+    # 1. Pattern: <sem_word> <num/ordinal/word> e.g. "sem 3", "semester 3rd", "semister third", "sem-2"
+    m1 = re.search(r"\b(?:sem|semester|semister|semster|s)\s*[-:]?\s*([1-8](?:st|nd|rd|th)?|first|second|third|fourth|fifth|sixth|seventh|eighth)\b", t)
+    if m1:
+        val = m1.group(1).lower()
+        if val in WORD_TO_NUM:
+            return WORD_TO_NUM[val]
+        num_str = re.sub(r"[^\d]", "", val)
+        if num_str and 1 <= int(num_str) <= 8:
+            return int(num_str)
+            
+    # 2. Pattern: <num/ordinal/word> <sem_word> e.g. "3rd semister", "third semester", "3 sem", "2nd sem"
+    m2 = re.search(r"\b([1-8](?:st|nd|rd|th)?|first|second|third|fourth|fifth|sixth|seventh|eighth)\s*[-:]?\s*(?:sem|semester|semister|semster|sems)\b", t)
+    if m2:
+        val = m2.group(1).lower()
+        if val in WORD_TO_NUM:
+            return WORD_TO_NUM[val]
+        num_str = re.sub(r"[^\d]", "", val)
+        if num_str and 1 <= int(num_str) <= 8:
+            return int(num_str)
+            
+    # 3. Direct mention with ordinal when in context of student/exam/top
+    m3 = re.search(r"\b(?:in|of|for)?\s*([1-8](?:st|nd|rd|th)|first|second|third|fourth|fifth|sixth|seventh|eighth)\b", t)
+    if m3 and any(w in t for w in ["top", "topper", "toppers", "student", "students", "fail", "failed", "sgpa", "rank", "marks", "exam"]):
+        val = m3.group(1).lower()
+        if val in WORD_TO_NUM:
+            return WORD_TO_NUM[val]
+        num_str = re.sub(r"[^\d]", "", val)
+        if num_str and 1 <= int(num_str) <= 8:
+            return int(num_str)
+            
+    return None
 
 def format_chat_history(history, k=MAX_HISTORY_TURNS) -> str:
     """Format the last k turns of conversation into readable dialog history."""
@@ -60,14 +115,26 @@ def format_chat_history(history, k=MAX_HISTORY_TURNS) -> str:
 
 def extract_recent_entities(history, max_turns=MAX_HISTORY_TURNS):
     """
-    Extracts recently discussed student USNs and semesters from the last `max_turns` of conversation history.
+    Extracts recently discussed student USNs, semesters, and last turn intent from history.
     Returns entities ordered from most recent to oldest.
     """
     recent_usns = []
     recent_sems = []
+    last_turn_intent = None
     
     if not history:
-        return {"usns": [], "semesters": []}
+        return {"usns": [], "semesters": [], "last_turn_intent": None}
+        
+    last_turn = history[-1]
+    last_q = last_turn.get("question", "").lower()
+    if any(w in last_q for w in ["fail", "failed", "backlog", "backlogs", "arrear", "arrears"]):
+        last_turn_intent = "failed_students"
+    elif any(w in last_q for w in ["compare", "versus", "vs", "difference"]):
+        last_turn_intent = "comparison"
+    elif any(w in last_q for w in ["top", "topper", "toppers", "rank"]):
+        last_turn_intent = "toppers"
+    elif any(w in last_q for w in ["placement", "drive", "shortlist"]):
+        last_turn_intent = "placement"
         
     for turn in reversed(history[-max_turns:]):
         text = f"{turn.get('question', '')} {turn.get('answer', '')}"
@@ -79,16 +146,20 @@ def extract_recent_entities(history, max_turns=MAX_HISTORY_TURNS):
             if u_upper not in recent_usns:
                 recent_usns.append(u_upper)
                 
-        # Extract Semesters
-        found_sems = re.findall(r"(?:sem|semester)\s*([1-8])", text, re.IGNORECASE)
-        for sm in found_sems:
+        # Extract Semesters using robust extractor
+        q_sem = extract_semester(turn.get("question", ""))
+        if q_sem and q_sem not in recent_sems:
+            recent_sems.append(q_sem)
+        a_sems = re.findall(r"(?:sem|semester)\s*([1-8])", text, re.IGNORECASE)
+        for sm in a_sems:
             sm_int = int(sm)
             if sm_int not in recent_sems:
                 recent_sems.append(sm_int)
                 
     return {
         "usns": recent_usns,
-        "semesters": recent_sems
+        "semesters": recent_sems,
+        "last_turn_intent": last_turn_intent
     }
 
 def route_and_build_context(user_query: str, history=None):
@@ -106,6 +177,8 @@ def route_and_build_context(user_query: str, history=None):
 
     recent_entities = extract_recent_entities(history, max_turns=MAX_HISTORY_TURNS)
     recent_usns = recent_entities["usns"]
+    recent_sems = recent_entities["semesters"]
+    last_intent = recent_entities.get("last_turn_intent")
 
     # 0. Check for Academic Regulations & Grading Scheme Policy
     is_policy_query = any(w in q_lower for w in [
@@ -129,7 +202,7 @@ def route_and_build_context(user_query: str, history=None):
         "he", "she", "his", "her", "the two", "the students", "respective",
         "names", "former", "latter", "first one", "second one"
     ]
-    has_pronoun_reference = any(re.search(rf"\b{re.escape(w)}\b", q_lower) for w in ref_pronouns) or "thei respectie" in q_lower
+    has_pronoun_reference = any(re.search(rf"\b{re.escape(w)}\b", q_lower) for w in ref_pronouns) or "thei respectie" in q_lower or "their respectie" in q_lower
     is_compare_intent = any(w in q_lower for w in [
         "compare", "comparison", "difference", "versus", "vs", "between",
         "who scored higher", "who has higher", "who is better", "which one", "higher cgpa"
@@ -141,7 +214,7 @@ def route_and_build_context(user_query: str, history=None):
         target_compare_usns = direct_usns[:2]
     elif is_compare_intent and len(direct_usns) == 1 and len(recent_usns) >= 1:
         target_compare_usns = [recent_usns[0], direct_usns[0]]
-    elif (is_compare_intent or has_pronoun_reference) and len(direct_usns) == 0 and len(recent_usns) >= 2:
+    elif (is_compare_intent or (has_pronoun_reference and last_intent == "comparison")) and len(direct_usns) == 0 and len(recent_usns) >= 2:
         target_compare_usns = recent_usns[:2]
 
     if target_compare_usns and (is_compare_intent or len(direct_usns) >= 2 or any(k in q_lower for k in ["name", "score", "cgpa", "rank", "sem", "grade", "both", "they", "their", "thei", "who", "which"])):
@@ -200,15 +273,27 @@ def route_and_build_context(user_query: str, history=None):
             citations_list.append("[Source: students_results.json / Autonomous Examination Database]")
 
     # 2. Check for Specific Student Semester Detailed Transcript (e.g. "What were 1RV21CS028 marks in sem 5")
-    sem_match = re.search(r"(?:sem|semester)\s*([1-8])", q_lower)
+    sem_from_query = extract_semester(q_lower)
     target_st_id = direct_usns[0] if direct_usns else (recent_usns[0] if (has_pronoun_reference and recent_usns) else None)
-    if sem_match and target_st_id and not target_compare_usns and any(w in q_lower for w in ["mark", "marks", "subject", "subjects", "grade", "grades", "transcript", "score", "scores", "in sem", "in semester"]):
-        sem_num = int(sem_match.group(1))
-        additional_data += f"\n{analytics.get_student_semester_breakdown(target_st_id, sem_num)}\n"
+    if sem_from_query and target_st_id and not target_compare_usns and any(w in q_lower for w in ["mark", "marks", "subject", "subjects", "grade", "grades", "transcript", "score", "scores", "in sem", "in semester"]):
+        additional_data += f"\n{analytics.get_student_semester_breakdown(target_st_id, sem_from_query)}\n"
         citations_list.append("[Source: students_results.json / Autonomous Examination Database]")
         citations_list.append("[Source: college_exam_results.pdf]")
 
-    # 3. Check for Degree Clearance & Graduation Convocation Audit
+    # 3. Check for Follow-Up Question on Marks for Previously Discussed Failed Students
+    is_marks_followup = any(w in q_lower for w in ["mark", "marks", "score", "scores", "grade", "grades"]) and (
+        has_pronoun_reference or any(w in q_lower for w in ["give", "show", "what", "their", "thei", "respectie", "respective"])
+    )
+    if is_marks_followup and last_intent == "failed_students" and recent_sems:
+        active_sem = recent_sems[0]
+        fail_data = analytics.get_failed_students(semester=active_sem)
+        additional_data += f"\n[OFFICIAL CANDIDATES WHO FAILED IN SEMESTER {active_sem} - EXACT SUBJECT MARKS & GRADES]:\n"
+        for st in fail_data["students"]:
+            additional_data += f"- {st['name']} (USN: {st['usn']}) | Semester {active_sem} SGPA: {st['sgpa']:.2f} | Failed Course(s): {', '.join(st['failed_subjects'])}\n"
+        citations_list.append("[Source: students_results.json / Autonomous Examination Database]")
+        citations_list.append("[Source: college_exam_results.pdf]")
+
+    # 4. Check for Degree Clearance & Graduation Convocation Audit
     elif any(w in q_lower for w in ["graduation", "graduate", "degree clearance", "eligible to graduate", "degree conferment", "convocation", "degree audit"]):
         target_usn = direct_usns[0] if direct_usns else (recent_usns[0] if recent_usns else None)
         if target_usn:
@@ -225,7 +310,7 @@ def route_and_build_context(user_query: str, history=None):
         citations_list.append("[Source: students_results.json / Autonomous Examination Database]")
         citations_list.append("[Source: college_exam_results.pdf, Page 1]")
 
-    # 4. Check for Corporate Campus Placement & TPO Eligibility Screening (e.g. "placement", "campus drive", "cutoff")
+    # 5. Check for Corporate Campus Placement & TPO Eligibility Screening (e.g. "placement", "campus drive", "cutoff")
     elif any(w in q_lower for w in ["placement", "placements", "campus drive", "tier 1", "tier-1", "placement drive", "eligible for drive", "job eligibility", "cutoff", "shortlist", "eligible for placement"]):
         if "tier 1" in q_lower or "tier-1" in q_lower:
             cutoff = 8.5
@@ -236,7 +321,7 @@ def route_and_build_context(user_query: str, history=None):
         citations_list.append("[Source: students_results.json / Autonomous Examination Database]")
         citations_list.append("[Source: college_exam_results.pdf, Page 1]")
 
-    # 5. Check for Subject Grade Distribution (e.g. "Grade distribution in ML", "How many students got Grade O in OS")
+    # 6. Check for Subject Grade Distribution (e.g. "Grade distribution in ML", "How many students got Grade O in OS")
     elif any(w in q_lower for w in ["grade distribution", "how many students got grade", "grade breakdown", "distribution of grades", "grades count", "how many grade o", "how many grade a"]):
         dist_res = analytics.get_subject_grade_distribution(q_lower)
         if dist_res:
@@ -244,8 +329,8 @@ def route_and_build_context(user_query: str, history=None):
             citations_list.append("[Source: students_results.json / Autonomous Examination Database]")
             citations_list.append("[Source: college_exam_results.pdf]")
 
-    # 6. Single Student Scorecard Lookup (Direct USN or Follow-up pronoun)
-    elif len(direct_usns) == 1 or (has_pronoun_reference and len(recent_usns) >= 1 and not is_policy_query):
+    # 7. Single Student Scorecard Lookup (Direct USN or Follow-up pronoun)
+    elif len(direct_usns) == 1 or (has_pronoun_reference and len(recent_usns) >= 1 and not is_policy_query and not is_marks_followup):
         target_usn = direct_usns[0] if direct_usns else recent_usns[0]
         st = analytics.find_student(target_usn)
         if st:
@@ -261,14 +346,14 @@ def route_and_build_context(user_query: str, history=None):
                 additional_data += f"Highest Subject: {sc['highest_subject']} | Lowest: {sc['lowest_subject']}\n"
                 citations_list.append("[Source: students_results.json / Autonomous Examination Database]")
 
-    # 7. Check for Subject / Domain Academic Analytics (e.g. "Who is best at maths overall", "ML toppers", "OS average")
+    # 8. Check for Subject / Domain Academic Analytics (e.g. "Who is best at maths overall", "ML toppers", "OS average")
     subj_data = analytics.get_subject_or_domain_analytics(q_lower)
     if subj_data:
         additional_data += f"\n{subj_data}\n"
         citations_list.append("[Source: students_results.json / Autonomous Examination Database]")
         citations_list.append("[Source: college_exam_results.pdf]")
 
-    # 8. Name Search (Detecting if multiple students share that name)
+    # 9. Name Search (Detecting if multiple students share that name)
     elif not any(w in q_lower for w in ["top", "average", "class", "policy", "grade", "menu", "fee", "compare", "fail", "arrear", "topper", "best", "highest", "lowest", "placement", "graduation"]):
         name_matches = analytics.find_students_by_name(user_query)
         if len(name_matches) > 1:
@@ -287,35 +372,31 @@ def route_and_build_context(user_query: str, history=None):
             additional_data += f"SGPA by Semester: {json.dumps(sc['sgpa_by_semester'])}\n"
             citations_list.append("[Source: students_results.json / Autonomous Examination Database]")
 
-    # 5. Check for Overall Batch Top Scorers / Rank List (Support variable N e.g. top 3, top 5, top 10, toppers)
+    # 10. Check for Overall Batch Top Scorers / Rank List (Support variable N e.g. top 3, top 5, top 10, toppers)
     is_top_query = bool(
         re.search(r"top\s*(?:\d+)?\s*(?:scorer|scorers|student|students|candidate|candidates|rank|topper|toppers|batch|cgpa)", q_lower)
         or any(keyword in q_lower for keyword in ["topper", "toppers", "rank 1", "highest cgpa", "merit list", "first rank", "highest score"])
     )
     if is_top_query and not subj_data:
-        sem_match = re.search(r"(?:sem|semester)\s*([1-8])", q_lower)
-        target_sem = int(sem_match.group(1)) if sem_match else None
-        
+        target_sem = extract_semester(q_lower)
         num_match = re.search(r"(?:top|first)\s*(\d+)", q_lower)
         n_count = int(num_match.group(1)) if num_match else 5
         
         top_data = analytics.get_top_scorers(n=n_count, semester=target_sem)
         if target_sem:
-            additional_data += f"\n[OFFICIAL TOP {n_count} SCORERS - SEMESTER {target_sem}]:\n"
+            additional_data += f"\n[OFFICIAL TOP {n_count} SCORERS - SEMESTER {target_sem} (RANKED STRICTLY BY SEMESTER SGPA)]:\n"
             for st in top_data["top_students"]:
-                additional_data += f"Rank #{st['rank']}: {st['name']} ({st['usn']}) - SGPA: {st['sgpa']} (Cumulative CGPA: {st['overall_cgpa']})\n"
+                additional_data += f"Rank #{st['rank']}: {st['name']} (USN: {st['usn']}) - Semester {target_sem} SGPA: {st['sgpa']} (Cumulative CGPA: {st['overall_cgpa']})\n"
         else:
             additional_data += f"\n[OFFICIAL MERIT ROLL - TOP {n_count} BATCH SCORERS BY CGPA]:\n"
             for st in top_data["top_students"]:
-                additional_data += f"Rank #{st['rank']}: {st['name']} ({st['usn']}) - CGPA: {st['cgpa']} ({st['standing']})\n"
+                additional_data += f"Rank #{st['rank']}: {st['name']} (USN: {st['usn']}) - CGPA: {st['cgpa']} ({st['standing']})\n"
         citations_list.append("[Source: college_exam_results.pdf, Page 1]")
         citations_list.append("[Source: students_results.json / Autonomous Examination Database]")
 
-    # 6. Check for Batch / Class Average & Statistics (if not asking for subject average)
+    # 11. Check for Batch / Class Average & Statistics (if not asking for subject average)
     if any(keyword in q_lower for keyword in ["average", "class average", "batch average", "pass percentage", "overall stats", "statistics"]) and not subj_data:
-        sem_match = re.search(r"(?:sem|semester)\s*([1-8])", q_lower)
-        target_sem = int(sem_match.group(1)) if sem_match else None
-        
+        target_sem = extract_semester(q_lower)
         batch_stats = analytics.calculate_batch_analytics(semester=target_sem)
         if target_sem:
             additional_data += f"\n[EXACT SEMESTER {target_sem} BATCH ANALYTICS]:\n"
@@ -333,22 +414,21 @@ def route_and_build_context(user_query: str, history=None):
         citations_list.append("[Source: college_exam_results.pdf, Page 1]")
         citations_list.append("[Source: students_results.json / Autonomous Examination Database]")
 
-    # 6. Check for Failed Students / Backlogs Query
+    # 12. Check for Failed Students / Backlogs Query
     is_fail_query = any(keyword in q_lower for keyword in ["fail", "failed", "backlog", "backlogs", "arrear", "arrears"])
     if is_fail_query:
-        sem_match = re.search(r"(?:sem|semester)\s*([1-8])", q_lower)
-        target_sem = int(sem_match.group(1)) if sem_match else None
-        
+        target_sem = extract_semester(q_lower)
         fail_data = analytics.get_failed_students(semester=target_sem)
         if target_sem:
             additional_data += f"\n[OFFICIAL CANDIDATES WHO FAILED IN SEMESTER {target_sem} ({fail_data['count']} Students)]:\n"
             for st in fail_data["students"]:
-                additional_data += f"- {st['name']} ({st['usn']}) - SGPA: {st['sgpa']} | Failed in: {', '.join(st['failed_subjects'])}\n"
+                additional_data += f"- {st['name']} (USN: {st['usn']}) | Semester {target_sem} SGPA: {st['sgpa']:.2f} | Failed Course(s): {', '.join(st['failed_subjects'])}\n"
         else:
             additional_data += f"\n[OFFICIAL CANDIDATES WITH ACTIVE BACKLOGS ({fail_data['count']} Students)]:\n"
             for st in fail_data["students"]:
-                additional_data += f"- {st['name']} ({st['usn']}) - CGPA: {st['cgpa']} | Backlogs: {st['backlogs_count']} | Standing: {st['standing']}\n"
+                additional_data += f"- {st['name']} (USN: {st['usn']}) | Cumulative CGPA: {st['cgpa']:.2f} | Active Backlogs: {st['backlogs_count']} | Standing: {st['standing']}\n"
         citations_list.append("[Source: students_results.json / Autonomous Examination Database]")
+        citations_list.append("[Source: college_exam_results.pdf]")
 
     # 7. Semantic Vector Retrieval from PDF via Chroma
     # Only retrieve from Chroma if additional_data does not already contain verified calculations/records,
