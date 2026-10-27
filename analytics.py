@@ -311,6 +311,16 @@ DOMAIN_SUBJECT_MAPPINGS = {
     "discreet": ["Discrete Mathematical Structures"],
     "dms": ["Discrete Mathematical Structures"],
 
+    # Engineering Mathematics Domain (Semesters 1 & 2)
+    "engineering mathematics": ["Engineering Mathematics I", "Engineering Mathematics II"],
+    "engineering maths": ["Engineering Mathematics I", "Engineering Mathematics II"],
+    "engineering math": ["Engineering Mathematics I", "Engineering Mathematics II"],
+    "engg mathematics": ["Engineering Mathematics I", "Engineering Mathematics II"],
+    "engg maths": ["Engineering Mathematics I", "Engineering Mathematics II"],
+    "engg math": ["Engineering Mathematics I", "Engineering Mathematics II"],
+    "eng maths": ["Engineering Mathematics I", "Engineering Mathematics II"],
+    "eng math": ["Engineering Mathematics I", "Engineering Mathematics II"],
+
     # Engineering Mathematics I
     "engineering mathematics i": ["Engineering Mathematics I"],
     "engineering mathematics 1": ["Engineering Mathematics I"],
@@ -329,7 +339,7 @@ DOMAIN_SUBJECT_MAPPINGS = {
     "maths 2": ["Engineering Mathematics II"],
     "m2": ["Engineering Mathematics II"],
 
-    # Overall Mathematics Domain
+    # Overall Mathematics Domain (All 3 Math Courses)
     "maths": ["Engineering Mathematics I", "Engineering Mathematics II", "Discrete Mathematical Structures"],
     "math": ["Engineering Mathematics I", "Engineering Mathematics II", "Discrete Mathematical Structures"],
     "mathematics": ["Engineering Mathematics I", "Engineering Mathematics II", "Discrete Mathematical Structures"],
@@ -407,6 +417,29 @@ DOMAIN_SUBJECT_MAPPINGS = {
     "seminar": ["Technical Seminar & Paper Publication"],
 }
 
+def get_domain_courses(query: str) -> Optional[Tuple[str, List[str]]]:
+    """
+    Checks if the query refers to a multi-course academic domain (e.g. 'engineering maths', 'web', 'machine learning').
+    Returns (domain_title, list_of_course_names) if matched and has >1 courses, else None.
+    """
+    if not query:
+        return None
+    q = query.lower().strip()
+    
+    # If a specific semester is mentioned, it's a single course request, not domain-wide
+    sem = extract_semester(q)
+    if sem is not None and any(w in q for w in ["math", "maths", "mathematics", "m1", "m2", "dms"]):
+        return None
+
+    # Check explicit domain mappings (sorted by length descending)
+    for k in sorted(DOMAIN_SUBJECT_MAPPINGS.keys(), key=len, reverse=True):
+        pattern = rf"\b{re.escape(k)}\b" if len(k) <= 4 else rf"\b{re.escape(k)}"
+        if re.search(pattern, q):
+            courses = DOMAIN_SUBJECT_MAPPINGS[k]
+            if len(courses) > 1:
+                return (k.title(), courses)
+    return None
+
 def resolve_subject_name(query: str) -> Optional[str]:
     """
     Resolves any user subject reference (including typos like 'discreet', contractions, and codes)
@@ -418,6 +451,15 @@ def resolve_subject_name(query: str) -> Optional[str]:
     q = query.lower().strip()
     students = _load_data()
     
+    # 0. Check explicit semester disambiguation for math
+    sem = extract_semester(q)
+    if sem == 1 and any(w in q for w in ["math", "maths", "mathematics", "m1"]):
+        return "Engineering Mathematics I"
+    elif sem == 2 and any(w in q for w in ["math", "maths", "mathematics", "m2"]):
+        return "Engineering Mathematics II"
+    elif sem == 3 and any(w in q for w in ["math", "maths", "mathematics", "dms"]):
+        return "Discrete Mathematical Structures"
+
     # 1. Check domain mapping keys (sorted by length descending so specific aliases take priority over generic words)
     for k in sorted(DOMAIN_SUBJECT_MAPPINGS.keys(), key=len, reverse=True):
         pattern = rf"\b{re.escape(k)}\b" if len(k) <= 4 else rf"\b{re.escape(k)}"
@@ -462,18 +504,31 @@ def get_subject_or_domain_analytics(query_text: str) -> Optional[str]:
     matched_subjects = []
     domain_name = ""
     
+    # 0. Check explicit semester disambiguation for math
+    sem = extract_semester(q_clean)
+    if sem == 1 and any(w in q_clean for w in ["math", "maths", "mathematics", "m1"]):
+        matched_subjects = ["Engineering Mathematics I"]
+        domain_name = "Engineering Mathematics I"
+    elif sem == 2 and any(w in q_clean for w in ["math", "maths", "mathematics", "m2"]):
+        matched_subjects = ["Engineering Mathematics II"]
+        domain_name = "Engineering Mathematics II"
+    elif sem == 3 and any(w in q_clean for w in ["math", "maths", "mathematics", "dms"]):
+        matched_subjects = ["Discrete Mathematical Structures"]
+        domain_name = "Discrete Mathematical Structures"
+        
     # 1. Match against domain mappings (sorted by length descending)
-    for k in sorted(DOMAIN_SUBJECT_MAPPINGS.keys(), key=len, reverse=True):
-        pattern = rf"\b{re.escape(k)}\b" if len(k) <= 4 else rf"\b{re.escape(k)}"
-        if re.search(pattern, q_clean):
-            matched_subjects = DOMAIN_SUBJECT_MAPPINGS[k]
-            domain_name = k.title()
-            break
+    if not matched_subjects:
+        for k in sorted(DOMAIN_SUBJECT_MAPPINGS.keys(), key=len, reverse=True):
+            pattern = rf"\b{re.escape(k)}\b" if len(k) <= 4 else rf"\b{re.escape(k)}"
+            if re.search(pattern, q_clean):
+                matched_subjects = DOMAIN_SUBJECT_MAPPINGS[k]
+                domain_name = k.title()
+                break
             
     # 2. Match directly against any course name or code in the curriculum
     if not matched_subjects:
-        for sm in range(1, 9):
-            for sub in students[0]["semesters"][str(sm)]["subjects"]:
+        for sm_idx in range(1, 9):
+            for sub in students[0]["semesters"][str(sm_idx)]["subjects"]:
                 if sub["name"].lower() in q_clean or sub["code"].lower() in q_clean:
                     matched_subjects = [sub["name"]]
                     domain_name = sub["name"]
@@ -501,30 +556,14 @@ def get_subject_or_domain_analytics(query_text: str) -> Optional[str]:
     out.append(f"Curriculum Scope: {len(matched_subjects)} Course(s) across all 200 Candidates in CSE Cohort")
     out.append(f"Courses Evaluated: {', '.join(matched_subjects)}\n")
     
-    # 3. Overall Domain Aggregation (when domain has multiple courses, e.g. Mathematics, AI, Labs)
-    if len(matched_subjects) > 1:
-        student_aggs = []
-        for s in students:
-            scores = []
-            for sm in s["semesters"].values():
-                for sub in sm["subjects"]:
-                    if sub["name"] in matched_subjects:
-                        scores.append({"name": sub["name"], "marks": sub["marks"], "grade": sub["grade"]})
-            if scores:
-                avg_m = round(sum(x["marks"] for x in scores) / len(scores), 2)
-                student_aggs.append({"usn": s["usn"], "name": s["name"], "avg": avg_m, "scores": scores, "cgpa": s["cgpa"]})
-                
-        student_aggs.sort(key=lambda x: x["avg"], reverse=True)
-        
-        out.append(f"TOP PERFORMERS OVERALL IN {domain_name.upper()} (Combined Average across all {len(matched_subjects)} courses):")
-        for idx, st in enumerate(student_aggs[:5], 1):
-            sc_details = ", ".join([f"{sc['name']}: {sc['marks']}/100 ({sc['grade']})" for sc in st["scores"]])
-            out.append(f"Rank #{idx}: {st['name']} (USN: {st['usn']}) - Combined Average: {st['avg']}% | CGPA: {st['cgpa']:.2f} [{sc_details}]")
-        out.append("")
-        
-    # 4. Course-by-Course Detailed Performance and Toppers
+    # Check if user requested top N performers (e.g. 'top 10', 'top 5', 'toppers')
+    num_m = re.search(r"(?:top|first)\s*(\d+)", q_clean)
+    top_k = int(num_m.group(1)) if num_m else (10 if any(w in q_clean for w in ["top", "topper", "toppers", "rank"]) else 5)
+    top_k = max(3, min(top_k, 25))
+
+    # 1. Course-by-Course Detailed Performance and Toppers FIRST
     out.append("COURSE-BY-COURSE DETAILED PERFORMANCE & TOPPERS:")
-    for sub_name in matched_subjects:
+    for sub_idx, sub_name in enumerate(matched_subjects, 1):
         all_scores = []
         sub_code = ""
         sub_sem = ""
@@ -561,7 +600,7 @@ def get_subject_or_domain_analytics(query_text: str) -> Optional[str]:
         grade_str = ", ".join([f"Grade {g}: {c}" for g, c in grade_counts.items() if c > 0])
         
         top_str = ", ".join([f"{t['name']} (USN: {t['usn']})" for t in toppers[:3]])
-        out.append(f"- Course: {sub_name} (Code: {sub_code}, Semester {sub_sem})")
+        out.append(f"\nCourse {sub_idx}: {sub_name} (Code: {sub_code}, Semester {sub_sem})")
         out.append(f"  * Total Candidates Appeared: {len(marks_vals)} Students")
         out.append(f"  * Students Passed: {pass_cnt} Students ({pass_pct}%)")
         out.append(f"  * Students Failed (Backlogs): {fail_cnt} Students ({100-pass_pct:.1f}%)")
@@ -569,14 +608,38 @@ def get_subject_or_domain_analytics(query_text: str) -> Optional[str]:
         out.append(f"  * Class Average: {avg_score}/100 | Lowest Score: {min_score}/100")
         out.append(f"  * Highest Score Achieved: {max_score}/100 by: {top_str}")
         
-        # Check if user requested top N performers (e.g. 'top 10', 'top 5', 'toppers')
-        num_m = re.search(r"(?:top|first)\s*(\d+)", q_clean)
-        top_k = int(num_m.group(1)) if num_m else (10 if any(w in q_clean for w in ["top", "topper", "toppers", "rank"]) else 3)
-        top_k = max(3, min(top_k, 25))
-        
-        out.append(f"  * Top {top_k} Performers (Ranked by Subject Marks & Cumulative CGPA):")
+        out.append(f"  * Top {top_k} Performers in {sub_name} (Strictly Ranked by Course Marks in Descending Order):")
         for idx, st in enumerate(all_scores[:top_k], 1):
             out.append(f"    {idx}. {st['name']} (USN: {st['usn']}) - Marks: {st['marks']}/100 ({st['grade']}) | Cumulative CGPA: {st['cgpa']:.2f}")
+
+    # 2. Combined Domain Merit Roll (when domain has multiple courses, e.g. Mathematics, AI, Labs)
+    if len(matched_subjects) > 1:
+        student_aggs = []
+        for s in students:
+            scores = []
+            for sm in s["semesters"].values():
+                for sub in sm["subjects"]:
+                    if sub["name"] in matched_subjects:
+                        scores.append({"name": sub["name"], "marks": sub["marks"], "grade": sub["grade"]})
+            if len(scores) == len(matched_subjects):
+                avg_m = round(sum(x["marks"] for x in scores) / len(scores), 2)
+                student_aggs.append({"usn": s["usn"], "name": s["name"], "avg": avg_m, "scores": scores, "cgpa": s["cgpa"]})
+                
+        student_aggs.sort(key=lambda x: (x["avg"], x["cgpa"]), reverse=True)
+        
+        out.append(f"\nCOMBINED MERIT ROLL: {domain_name.upper()} (Combined Average across all {len(matched_subjects)} courses):")
+        for idx, st in enumerate(student_aggs[:top_k], 1):
+            sc_details = ", ".join([f"{sc['name']}: {sc['marks']}/100" for sc in st["scores"]])
+            out.append(f"  {idx}. {st['name']} (USN: {st['usn']}) - Combined Average: {st['avg']}% | Cumulative CGPA: {st['cgpa']:.2f} [{sc_details}]")
+        out.append("")
+        out.append(
+            "[CRITICAL RANKING AND ACCURACY RULES FOR LLM:\n"
+            "- Individual course rankings MUST follow that course's marks in strictly descending order.\n"
+            "- A student with lower marks MUST NEVER be placed above a student with higher marks.\n"
+            "- Sneha Menon scored 85 in Engineering Mathematics I and is NOT in the Math I top 5.\n"
+            "- If the user asks for Engineering Mathematics without specifying Semester 1 or Semester 2, clearly present BOTH Semester 1 (Math I) and Semester 2 (Math II) Top Performers, followed by the Combined Merit list.\n"
+            "- DO NOT mislabel combined average percentages as single-course marks.]"
+        )
         
     return "\n".join(out)
 

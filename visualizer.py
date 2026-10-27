@@ -310,6 +310,72 @@ def plot_subject_top_scorers(subject_query: str, n: int = 10, show: bool = True)
     return _finalize_plot(fig, filename, show=show, title=f"Top {n_count} in {subject_name}")
 
 
+def plot_domain_top_scorers(domain_name: str, subjects: List[str], n: int = 5, show: bool = True) -> Optional[str]:
+    """
+    Grouped horizontal bar chart for top N students in a multi-course academic domain (e.g. Engineering Mathematics),
+    displaying individual course marks and combined average.
+    """
+    students = analytics._load_data()
+    student_aggs = []
+    for s in students:
+        scores = {}
+        for sm in s["semesters"].values():
+            for sub in sm["subjects"]:
+                if sub["name"] in subjects:
+                    scores[sub["name"]] = sub["marks"]
+        if len(scores) == len(subjects):
+            avg = round(sum(scores.values()) / len(scores), 2)
+            student_aggs.append({
+                "usn": s["usn"],
+                "name": s["name"],
+                "cgpa": s["cgpa"],
+                "scores": scores,
+                "avg": avg
+            })
+    if not student_aggs:
+        return None
+        
+    student_aggs.sort(key=lambda x: (x["avg"], x["cgpa"]), reverse=True)
+    n_clamped = max(3, min(n, 15))
+    top_students = student_aggs[:n_clamped]
+    
+    fig, ax = plt.subplots(figsize=(11, max(5.0, n_clamped * 0.95)))
+    y_pos = np.arange(len(top_students))
+    
+    # Reverse so #1 rank is at the top
+    rev_students = list(reversed(top_students))
+    labels = [f"#{n_clamped - i} {s['name']}\n({s['usn']})" for i, s in enumerate(rev_students)]
+    
+    num_courses = len(subjects)
+    total_bar_height = 0.72
+    sub_bar_height = total_bar_height / num_courses
+    
+    palette = ["#2563EB", "#059669", "#D97706", "#7C3AED", "#DB2777"]
+    
+    for c_idx, sub_name in enumerate(subjects):
+        offset = (c_idx - (num_courses - 1) / 2.0) * sub_bar_height
+        marks = [s["scores"].get(sub_name, 0) for s in rev_students]
+        color = palette[c_idx % len(palette)]
+        short_sub_name = sub_name.replace("Engineering Mathematics", "Math").replace("Structures", "Struct.")
+        bars = ax.barh(y_pos + offset, marks, height=sub_bar_height * 0.88, label=short_sub_name, color=color, edgecolor="#1F2937", linewidth=0.9, zorder=3)
+        for bar, val in zip(bars, marks):
+            ax.text(val + 1.0, bar.get_y() + bar.get_height() / 2.0, f"{val}", va="center", fontsize=8.5, fontweight="bold", color="#111827")
+            
+    ax.set_yticks(y_pos)
+    ax.set_yticklabels(labels)
+    ax.set_xlim(0, 118)
+    ax.set_xlabel("Course Marks (out of 100)", fontweight="bold")
+    
+    title = f"Top {n_clamped} Performers: {domain_name.upper()}"
+    subtitle = f"Course Marks Comparison across {num_courses} Courses: {', '.join(subjects)}"
+    ax.set_title(f"{title}\n{subtitle}", pad=14, fontweight="bold", fontsize=12)
+    ax.legend(loc="lower right", frameon=True, facecolor="#F9FAFB", edgecolor="#D1D5DB")
+    
+    safe_name = re.sub(r"[^\w\-]", "_", domain_name.lower())
+    filename = f"top_{n_clamped}_{safe_name}.png"
+    return _finalize_plot(fig, filename, show=show, title=f"Top {n_clamped} in {domain_name}")
+
+
 def plot_grade_distribution(subject_query: str, show: bool = True) -> Optional[str]:
     """
     Bar chart showing Grade Distribution (O, A+, A, B+, B, C, F) for a course or domain.
@@ -625,8 +691,19 @@ def dispatch_graph_for_query(user_query: str, history: Optional[List[Dict[str, A
         num_match = re.search(r"(?:top|first)\s*(\d+)", q_lower) or (re.search(r"(?:top|first)\s*(\d+)", last_turn_q) if last_turn_q else None)
         n_count = int(num_match.group(1)) if num_match else 5
         
-        # Check if query asks for toppers in a specific course (e.g. Operating Systems, ML, Discrete Math)
+        # Check if query asks for toppers in a multi-course domain (e.g. Engineering Maths: Math I vs Math II)
         sub_candidate = q_lower if not any(w in q_lower for w in ["previous", "history"]) else last_turn_q
+        domain_info = analytics.get_domain_courses(sub_candidate)
+        if domain_info and len(domain_info[1]) > 1:
+            p = plot_domain_top_scorers(domain_info[0], domain_info[1], n=n_count, show=show)
+            if p:
+                return {
+                    "chart_path": p,
+                    "chart_type": "domain_top_scorers",
+                    "description": f"Top {n_count} Performers in {domain_info[0]} ({', '.join(domain_info[1])})",
+                    "markdown_notice": f"\n\n📊 **[Interactive Chart Displayed & Generated]**: Saved to `{os.path.basename(p)}`"
+                }
+
         resolved_sub = analytics.resolve_subject_name(sub_candidate)
         if resolved_sub:
             p = plot_subject_top_scorers(resolved_sub, n=n_count, show=show)
