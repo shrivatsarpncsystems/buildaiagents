@@ -467,3 +467,110 @@ def get_failed_students(semester: Optional[int] = None) -> Dict[str, Any]:
             "count": len(failed_students),
             "students": failed_students
         }
+
+def get_student_semester_breakdown(identifier: str, semester: int) -> str:
+    """Detailed semester transcript breakdown with individual course marks, credits, and grades."""
+    st = find_student(identifier)
+    if not st:
+        return f"Student '{identifier}' not found in college examination records."
+    sem_str = str(semester)
+    if sem_str not in st["semesters"]:
+        return f"Semester {semester} not found for student {st['name']} ({st['usn']})."
+    sem = st["semesters"][sem_str]
+    out = [
+        f"[OFFICIAL SEMESTER {semester} TRANSCRIPT BREAKDOWN: {st['name']} ({st['usn']})]",
+        f"Program: B.Tech Computer Science & Engineering | Batch: 2021-2025 | Class Rank: #{st['rank']}",
+        f"Semester {semester} SGPA: {sem['sgpa']:.2f} / 10.0 | Cumulative CGPA: {st['cgpa']:.2f} | Credits Earned: {sem['credits']:.1f}\n",
+        "Individual Course Performance:"
+    ]
+    for sub in sem["subjects"]:
+        out.append(f"- {sub['code']} {sub['name']} ({sub['credits']} Credits): {sub['marks']}/100 | Grade: {sub['grade']} (Grade Point: {sub['grade_point']})")
+    return "\n".join(out)
+
+def get_placement_eligibility(min_cgpa: float = 7.0, max_backlogs: int = 0, limit: int = 25) -> str:
+    """Filter students meeting corporate campus placement drive cutoff criteria."""
+    students = _load_data()
+    eligible = [s for s in students if s["cgpa"] >= min_cgpa and s["backlogs"] <= max_backlogs]
+    eligible.sort(key=lambda x: x["cgpa"], reverse=True)
+    out = [
+        f"[OFFICIAL TRAINING & PLACEMENT (TPO) ELIGIBILITY SCREENING]",
+        f"Drive Screening Cutoff: Minimum CGPA >= {min_cgpa:.2f} | Maximum Active Backlogs <= {max_backlogs}",
+        f"Total Eligible Candidates: {len(eligible)} of {len(students)} Students ({len(eligible)/len(students)*100:.1f}% of CSE Cohort)\n",
+        f"Top Shortlisted Candidates (Showing top {min(limit, len(eligible))}):"
+    ]
+    for idx, s in enumerate(eligible[:limit], 1):
+        out.append(f"{idx}. {s['name']} (USN: {s['usn']}) - CGPA: {s['cgpa']:.2f} | Rank: #{s['rank']} | Backlogs: {s['backlogs']} | Standing: {s['standing']}")
+    return "\n".join(out)
+
+def get_subject_grade_distribution(subject_query: str) -> Optional[str]:
+    """Calculate exact grade distribution (O, A+, A, B+, B, C, F) for a subject."""
+    students = _load_data()
+    q = subject_query.lower().strip()
+    
+    target_name = None
+    # 1. Match against domain mappings (e.g. ml, os, dbms, cn, maths)
+    for k in sorted(DOMAIN_SUBJECT_MAPPINGS.keys(), key=len, reverse=True):
+        pattern = rf"\b{re.escape(k)}\b" if len(k) <= 4 else rf"\b{re.escape(k)}"
+        if re.search(pattern, q):
+            target_name = DOMAIN_SUBJECT_MAPPINGS[k][0]
+            break
+            
+    # 2. Match directly against curriculum courses or codes
+    if not target_name:
+        for sm in range(1, 9):
+            for sub in students[0]["semesters"][str(sm)]["subjects"]:
+                if sub["name"].lower() in q or sub["code"].lower() in q:
+                    target_name = sub["name"]
+                    break
+            if target_name:
+                break
+                
+    if not target_name:
+        return None
+    all_grades = []
+    all_marks = []
+    for s in students:
+        for sm in s["semesters"].values():
+            for sub in sm["subjects"]:
+                if sub["name"] == target_name:
+                    all_grades.append(sub["grade"])
+                    all_marks.append(sub["marks"])
+                    
+    total = len(all_grades)
+    if total == 0:
+        return None
+        
+    counts = {g: all_grades.count(g) for g in ["O", "A+", "A", "B+", "B", "C", "F"]}
+    out = [
+        f"[OFFICIAL GRADE DISTRIBUTION: {target_name.upper()}]",
+        f"Cohort Enrollment: {total} Students | Course Average Score: {sum(all_marks)/total:.2f}/100 | Highest: {max(all_marks)}/100 | Lowest: {min(all_marks)}/100\n",
+        "Grade Breakdown:",
+        f"- Grade O  (90-100%): {counts['O']:3d} students ({counts['O']/total*100:.1f}%) [Outstanding]",
+        f"- Grade A+ (80-89%) : {counts['A+']:3d} students ({counts['A+']/total*100:.1f}%) [Excellent]",
+        f"- Grade A  (70-79%) : {counts['A']:3d} students ({counts['A']/total*100:.1f}%) [Very Good]",
+        f"- Grade B+ (60-69%) : {counts['B+']:3d} students ({counts['B+']/total*100:.1f}%) [Good]",
+        f"- Grade B  (50-59%) : {counts['B']:3d} students ({counts['B']/total*100:.1f}%) [Above Average]",
+        f"- Grade C  (40-49%) : {counts['C']:3d} students ({counts['C']/total*100:.1f}%) [Pass]",
+        f"- Grade F  (< 40%)  : {counts['F']:3d} students ({counts['F']/total*100:.1f}%) [Fail / Re-exam]",
+        f"\nDistinction Honor Rate (Grade O & A+): {(counts['O'] + counts['A+'])/total*100:.1f}%",
+        f"Course Pass Rate: {(total - counts['F'])/total*100:.1f}% ({counts['F']} backlog candidates)"
+    ]
+    return "\n".join(out)
+
+def check_graduation_status(identifier: str) -> str:
+    """Audit degree clearance and convocation eligibility for a candidate."""
+    students = _load_data()
+    st = find_student(identifier)
+    if not st:
+        return f"Student '{identifier}' not found in college examination records."
+    cleared = (st["backlogs"] == 0 and st["total_credits"] >= 136.5)
+    out = [
+        f"[OFFICIAL DEGREE CLEARANCE & CONVOCATION AUDIT: {st['name']} ({st['usn']})]",
+        f"Program: B.Tech Computer Science & Engineering (Batch 2021-2025 | Autonomous Gazette)",
+        f"Cohort Rank: #{st['rank']} of 200 Candidates | Final Cumulative CGPA: {st['cgpa']:.2f} / 10.0",
+        f"Cumulative Credits Earned: {st['total_credits']:.1f} / 136.5 Total Program Credits",
+        f"Active Backlogs: {st['backlogs']}",
+        f"Graduating Academic Standing: {st['standing']}",
+        f"Graduation Audit Decision: {'CLEARED FOR DEGREE CONFERMENT (CONVOCATION READY)' if cleared else 'PENDING - REMEDIATION REQUIRED (ACTIVE ARREARS)'}"
+    ]
+    return "\n".join(out)

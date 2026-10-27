@@ -199,7 +199,52 @@ def route_and_build_context(user_query: str, history=None):
             citations_list.append("[Source: college_exam_results.pdf, Page 1]")
             citations_list.append("[Source: students_results.json / Autonomous Examination Database]")
 
-    # 2. Single Student Scorecard Lookup (Direct USN or Follow-up pronoun)
+    # 2. Check for Specific Student Semester Detailed Transcript (e.g. "What were 1RV21CS028 marks in sem 5")
+    sem_match = re.search(r"(?:sem|semester)\s*([1-8])", q_lower)
+    target_st_id = direct_usns[0] if direct_usns else (recent_usns[0] if (has_pronoun_reference and recent_usns) else None)
+    if sem_match and target_st_id and not target_compare_usns and any(w in q_lower for w in ["mark", "marks", "subject", "subjects", "grade", "grades", "transcript", "score", "scores", "in sem", "in semester"]):
+        sem_num = int(sem_match.group(1))
+        additional_data += f"\n{analytics.get_student_semester_breakdown(target_st_id, sem_num)}\n"
+        citations_list.append("[Source: students_results.json / Autonomous Examination Database]")
+        citations_list.append("[Source: college_exam_results.pdf]")
+
+    # 3. Check for Degree Clearance & Graduation Convocation Audit
+    elif any(w in q_lower for w in ["graduation", "graduate", "degree clearance", "eligible to graduate", "degree conferment", "convocation", "degree audit"]):
+        target_usn = direct_usns[0] if direct_usns else (recent_usns[0] if recent_usns else None)
+        if target_usn:
+            additional_data += f"\n{analytics.check_graduation_status(target_usn)}\n"
+        else:
+            students = analytics._load_data()
+            cleared = sum(1 for s in students if s["backlogs"] == 0 and s["total_credits"] >= 136.5)
+            additional_data += (
+                f"\n[OFFICIAL COHORT GRADUATION CLEARANCE AUDIT (200 STUDENTS)]:\n"
+                f"- Total Candidates Evaluated: 200 Students\n"
+                f"- Cleared for Degree Conferment: {cleared} Students ({cleared/200*100:.1f}%)\n"
+                f"- Remediation Required (Active Backlogs): {200 - cleared} Students\n"
+            )
+        citations_list.append("[Source: students_results.json / Autonomous Examination Database]")
+        citations_list.append("[Source: college_exam_results.pdf, Page 1]")
+
+    # 4. Check for Corporate Campus Placement & TPO Eligibility Screening (e.g. "placement", "campus drive", "cutoff")
+    elif any(w in q_lower for w in ["placement", "placements", "campus drive", "tier 1", "tier-1", "placement drive", "eligible for drive", "job eligibility", "cutoff", "shortlist", "eligible for placement"]):
+        if "tier 1" in q_lower or "tier-1" in q_lower:
+            cutoff = 8.5
+        else:
+            num_match = re.search(r"(?:cgpa|cutoff|above|>=|>)\s*(\d+(?:\.\d+)?)", q_lower)
+            cutoff = float(num_match.group(1)) if num_match else 7.0
+        additional_data += f"\n{analytics.get_placement_eligibility(min_cgpa=cutoff, max_backlogs=0)}\n"
+        citations_list.append("[Source: students_results.json / Autonomous Examination Database]")
+        citations_list.append("[Source: college_exam_results.pdf, Page 1]")
+
+    # 5. Check for Subject Grade Distribution (e.g. "Grade distribution in ML", "How many students got Grade O in OS")
+    elif any(w in q_lower for w in ["grade distribution", "how many students got grade", "grade breakdown", "distribution of grades", "grades count", "how many grade o", "how many grade a"]):
+        dist_res = analytics.get_subject_grade_distribution(q_lower)
+        if dist_res:
+            additional_data += f"\n{dist_res}\n"
+            citations_list.append("[Source: students_results.json / Autonomous Examination Database]")
+            citations_list.append("[Source: college_exam_results.pdf]")
+
+    # 6. Single Student Scorecard Lookup (Direct USN or Follow-up pronoun)
     elif len(direct_usns) == 1 or (has_pronoun_reference and len(recent_usns) >= 1 and not is_policy_query):
         target_usn = direct_usns[0] if direct_usns else recent_usns[0]
         st = analytics.find_student(target_usn)
@@ -216,15 +261,15 @@ def route_and_build_context(user_query: str, history=None):
                 additional_data += f"Highest Subject: {sc['highest_subject']} | Lowest: {sc['lowest_subject']}\n"
                 citations_list.append("[Source: students_results.json / Autonomous Examination Database]")
 
-    # 3. Check for Subject / Domain Academic Analytics (e.g. "Who is best at maths overall", "ML toppers", "OS average")
+    # 7. Check for Subject / Domain Academic Analytics (e.g. "Who is best at maths overall", "ML toppers", "OS average")
     subj_data = analytics.get_subject_or_domain_analytics(q_lower)
     if subj_data:
         additional_data += f"\n{subj_data}\n"
         citations_list.append("[Source: students_results.json / Autonomous Examination Database]")
         citations_list.append("[Source: college_exam_results.pdf]")
 
-    # 4. Name Search (Detecting if multiple students share that name)
-    elif not any(w in q_lower for w in ["top", "average", "class", "policy", "grade", "menu", "fee", "compare", "fail", "arrear", "topper", "best", "highest", "lowest"]):
+    # 8. Name Search (Detecting if multiple students share that name)
+    elif not any(w in q_lower for w in ["top", "average", "class", "policy", "grade", "menu", "fee", "compare", "fail", "arrear", "topper", "best", "highest", "lowest", "placement", "graduation"]):
         name_matches = analytics.find_students_by_name(user_query)
         if len(name_matches) > 1:
             additional_data += f"\n[MULTIPLE CANDIDATES SHARING NAME '{user_query}' ({len(name_matches)} Students)]:\n"
@@ -326,23 +371,74 @@ def route_and_build_context(user_query: str, history=None):
 
     return full_context, citations_str
 
+def print_erp_capabilities_menu():
+    print("\n" + "=" * 80)
+    print("  APEX INSTITUTE OF TECHNOLOGY - ACADEMIC ERP AI ASSISTANT DIRECTORY")
+    print("=" * 80)
+    print("""
+[1] STUDENT SCORECARDS & TRANSCRIPTS:
+  • Full 8-Semester Record : 'Show scorecard for student 1RV21CS028'
+  • Semester Subject Marks : 'Show marks of 1RV21CS028 in Semester 5'
+  • Name Search (with alerts): 'Who is Divya Bhat?' (handles duplicate names)
+
+[2] HEAD-TO-HEAD CANDIDATE COMPARISONS:
+  • Multi-Semester Compare : 'Compare student 1RV21CS028 and 1RV21CS007'
+  • Conversational Followup: 'What are their respective names?' (k>=6 memory)
+  • Metric Progression     : 'Who scored higher in Semester 5?' / 'Who has fewer backlogs?'
+
+[3] SUBJECT MASTERY & DOMAIN ANALYTICS:
+  • Multi-Course Domains   : 'Who is best at maths overall?' (Math I, Math II, Discrete Math)
+  • Subject Toppers        : 'Who topped Machine Learning?' / 'Top scorer in Java Lab'
+  • Class Averages & Pass  : 'What is the average marks in Operating Systems?'
+  • Grade Distribution     : 'What is the grade distribution in Compiler Design?'
+
+[4] MERIT ROLLS & TOPPERS:
+  • Batch CGPA Honor Roll  : 'Who are the top 5 scorers in the batch?' / 'Top 10 toppers'
+  • Semester SGPA Toppers  : 'Who topped Semester 4?' / 'Top 3 students in Sem 7'
+
+[5] BATCH STATISTICS & TRENDS:
+  • Cohort Average & Pass  : 'What is the overall batch average CGPA and pass percentage?'
+  • Performance Brackets   : 'How many students achieved First Class with Distinction?'
+  • Semester Progression   : 'What was the average SGPA in Semester 3?'
+
+[6] TRAINING & PLACEMENT (TPO) SCREENING:
+  • Tier-1 Shortlisting    : 'Who is eligible for Tier-1 placements (CGPA >= 8.5, 0 backlogs)?'
+  • General Cutoff Drives  : 'List students eligible for placement with cutoff 7.5 CGPA'
+
+[7] DEGREE AUDIT & GRADUATION CLEARANCE:
+  • Individual Clearance   : 'Is student 1RV21CS028 eligible for graduation?'
+  • Cohort Convocation     : 'How many students are cleared for degree conferment?'
+
+[8] BACKLOG REGISTRY & REMEDIATION:
+  • Cohort Active Arrears  : 'List all candidates with active backlogs'
+  • Semester Failures      : 'List students who failed in Semester 1'
+
+[9] ACADEMIC REGULATIONS & CITATIONS:
+  • Grading Criteria       : 'What is the grading policy and criteria for Grade O and A+?'
+  • Out-of-Context Defense : 'What is the cafeteria lunch menu?' (Polite refusal)
+  • Audit Citations        : Every answer cites exact PDF Page numbers and database records.
+""")
+    print("=" * 80 + "\n")
+
 def print_banner():
-    print("=" * 78)
-    print("  APEX INSTITUTE OF TECHNOLOGY - COLLEGE EXAM RESULTS AI ASSISTANT")
+    print("=" * 80)
+    print("  APEX INSTITUTE OF TECHNOLOGY - COLLEGE EXAMINATION ERP AI ASSISTANT")
     print("  B.Tech Computer Science & Engineering (Batch 2021-2025 | 200 Students)")
     print("  Powered by Local RAG (Chroma + Ollama Llama 3.2:3b)")
     print(f"  Conversational Memory: Active (Remembers last {MAX_HISTORY_TURNS} conversation turns)")
-    print("=" * 78)
-    print("Quick Action Suggestions:")
+    print("=" * 80)
+    print("Quick Navigation:")
+    print("  • Type 'help' or 'menu' to see the complete list of all ERP operations.")
+    print("  • Type 'q' or 'quit' to exit.")
+    print("Try Asking:")
     print("  1. 'Compare student 1RV21CS028 and 1RV21CS007'")
     print("  2. 'What are their respective names?' (Multi-turn follow-up test)")
-    print("  3. 'Who are the top 5 scorers in the batch?'")
-    print("  4. 'Who topped Semester 4?'")
-    print("  5. 'What is the overall batch average CGPA and pass percentage?'")
-    print("  6. 'What is the grading policy and criteria for Grade O and A+?'")
-    print("  7. 'What is the cafeteria lunch menu?' (Test out-of-context handling)")
-    print("  Type 'q' to exit.")
-    print("=" * 78 + "\n")
+    print("  3. 'Who is best at maths overall?'")
+    print("  4. 'Who is eligible for Tier-1 company placements?'")
+    print("  5. 'Show marks of 1RV21CS028 in Semester 5'")
+    print("  6. 'What is the grade distribution in Machine Learning?'")
+    print("  7. 'Is student 1RV21CS028 eligible for graduation?'")
+    print("=" * 80 + "\n")
 
 if __name__ == "__main__":
     print_banner()
@@ -351,7 +447,7 @@ if __name__ == "__main__":
 
     while True:
         try:
-            user_input = input("Ask a question about the college exam results (q to quit): ").strip()
+            user_input = input("Ask a question about the college exam results (q to quit, help for menu): ").strip()
         except (KeyboardInterrupt, EOFError):
             print("\nExiting session. Goodbye!")
             break
@@ -361,6 +457,9 @@ if __name__ == "__main__":
         if user_input.lower() in ["q", "quit", "exit"]:
             print("Session ended.")
             break
+        if user_input.lower() in ["help", "menu", "commands", "features", "options"]:
+            print_erp_capabilities_menu()
+            continue
 
         print("\nSearching PDF transcripts and computing analytics...")
         context_str, citations_str = route_and_build_context(user_input, history=conversation_history)
