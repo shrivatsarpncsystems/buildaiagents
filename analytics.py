@@ -296,17 +296,43 @@ def calculate_batch_analytics(semester: Optional[int] = None) -> Dict[str, Any]:
         }
 
 DOMAIN_SUBJECT_MAPPINGS = {
-    # Mathematics
+    # Discrete Mathematics (prioritized aliases including common typos like 'discreet')
+    "discrete mathematical structures": ["Discrete Mathematical Structures"],
+    "discrete mathematical": ["Discrete Mathematical Structures"],
+    "discrete structures": ["Discrete Mathematical Structures"],
+    "discrete maths": ["Discrete Mathematical Structures"],
+    "discrete math": ["Discrete Mathematical Structures"],
+    "discrete": ["Discrete Mathematical Structures"],
+    "discreet mathematical structures": ["Discrete Mathematical Structures"],
+    "discreet mathematical": ["Discrete Mathematical Structures"],
+    "discreet structures": ["Discrete Mathematical Structures"],
+    "discreet maths": ["Discrete Mathematical Structures"],
+    "discreet math": ["Discrete Mathematical Structures"],
+    "discreet": ["Discrete Mathematical Structures"],
+    "dms": ["Discrete Mathematical Structures"],
+
+    # Engineering Mathematics I
+    "engineering mathematics i": ["Engineering Mathematics I"],
+    "engineering mathematics 1": ["Engineering Mathematics I"],
+    "engineering maths 1": ["Engineering Mathematics I"],
+    "engineering math 1": ["Engineering Mathematics I"],
+    "math 1": ["Engineering Mathematics I"],
+    "maths 1": ["Engineering Mathematics I"],
+    "m1": ["Engineering Mathematics I"],
+
+    # Engineering Mathematics II
+    "engineering mathematics ii": ["Engineering Mathematics II"],
+    "engineering mathematics 2": ["Engineering Mathematics II"],
+    "engineering maths 2": ["Engineering Mathematics II"],
+    "engineering math 2": ["Engineering Mathematics II"],
+    "math 2": ["Engineering Mathematics II"],
+    "maths 2": ["Engineering Mathematics II"],
+    "m2": ["Engineering Mathematics II"],
+
+    # Overall Mathematics Domain
     "maths": ["Engineering Mathematics I", "Engineering Mathematics II", "Discrete Mathematical Structures"],
     "math": ["Engineering Mathematics I", "Engineering Mathematics II", "Discrete Mathematical Structures"],
     "mathematics": ["Engineering Mathematics I", "Engineering Mathematics II", "Discrete Mathematical Structures"],
-    "discrete math": ["Discrete Mathematical Structures"],
-    "discrete mathematical": ["Discrete Mathematical Structures"],
-    "discrete": ["Discrete Mathematical Structures"],
-    "math 1": ["Engineering Mathematics I"],
-    "maths 1": ["Engineering Mathematics I"],
-    "math 2": ["Engineering Mathematics II"],
-    "maths 2": ["Engineering Mathematics II"],
 
     # Core CS Theory & Systems
     "data structures": ["Data Structures & Applications", "Data Structures Laboratory"],
@@ -380,6 +406,49 @@ DOMAIN_SUBJECT_MAPPINGS = {
     "major project": ["Major Project Phase I", "Major Project Phase II"],
     "seminar": ["Technical Seminar & Paper Publication"],
 }
+
+def resolve_subject_name(query: str) -> Optional[str]:
+    """
+    Resolves any user subject reference (including typos like 'discreet', contractions, and codes)
+    to a canonical course name (e.g. 'discreet maths' -> 'Discrete Mathematical Structures',
+    'ml' -> 'Machine Learning & Pattern Recognition', 'os' -> 'Operating Systems').
+    """
+    if not query:
+        return None
+    q = query.lower().strip()
+    students = _load_data()
+    
+    # 1. Check domain mapping keys (sorted by length descending so specific aliases take priority over generic words)
+    for k in sorted(DOMAIN_SUBJECT_MAPPINGS.keys(), key=len, reverse=True):
+        pattern = rf"\b{re.escape(k)}\b" if len(k) <= 4 else rf"\b{re.escape(k)}"
+        if re.search(pattern, q):
+            return DOMAIN_SUBJECT_MAPPINGS[k][0]
+            
+    # 2. Check direct course name or code match
+    for sm in range(1, 9):
+        for sub in students[0]["semesters"][str(sm)]["subjects"]:
+            s_name = sub["name"]
+            s_code = sub["code"]
+            if s_name.lower() in q or s_code.lower() in q:
+                return s_name
+                
+    # 3. Fuzzy match across all 48 course names
+    words = [w for w in re.split(r"\W+", q) if len(w) >= 3 and w not in [
+        "give", "show", "bar", "graph", "chart", "how", "many", "students",
+        "passed", "passes", "fail", "failed", "who", "what", "grade", "distribution"
+    ]]
+    all_courses = []
+    for sm in range(1, 9):
+        for sub in students[0]["semesters"][str(sm)]["subjects"]:
+            all_courses.append(sub["name"])
+            
+    for w in words:
+        for cname in all_courses:
+            c_words = [cw.lower() for cw in re.split(r"\W+", cname)]
+            if any(difflib.SequenceMatcher(None, w, cw).ratio() >= 0.8 for cw in c_words):
+                return cname
+                
+    return None
 
 def get_subject_or_domain_analytics(query_text: str) -> Optional[str]:
     """
@@ -477,12 +546,20 @@ def get_subject_or_domain_analytics(query_text: str) -> Optional[str]:
         min_score = marks_vals[-1]
         toppers = [x for x in all_scores if x["marks"] == max_score]
         fail_cnt = sum(1 for m in marks_vals if m < 40)
-        pass_pct = round(((len(marks_vals) - fail_cnt) / len(marks_vals)) * 100, 2)
+        pass_cnt = len(marks_vals) - fail_cnt
+        pass_pct = round((pass_cnt / len(marks_vals)) * 100, 2)
+        
+        grade_counts = {g: sum(1 for x in all_scores if x["grade"] == g) for g in ["O", "A+", "A", "B+", "B", "C", "F"]}
+        grade_str = ", ".join([f"Grade {g}: {c}" for g, c in grade_counts.items() if c > 0])
         
         top_str = ", ".join([f"{t['name']} (USN: {t['usn']})" for t in toppers[:3]])
         out.append(f"- Course: {sub_name} (Code: {sub_code}, Semester {sub_sem})")
+        out.append(f"  * Total Candidates Appeared: {len(marks_vals)} Students")
+        out.append(f"  * Students Passed: {pass_cnt} Students ({pass_pct}%)")
+        out.append(f"  * Students Failed (Backlogs): {fail_cnt} Students ({100-pass_pct:.1f}%)")
+        out.append(f"  * Grade Breakdown: {grade_str}")
+        out.append(f"  * Class Average: {avg_score}/100 | Lowest Score: {min_score}/100")
         out.append(f"  * Highest Score Achieved: {max_score}/100 by: {top_str}")
-        out.append(f"  * Class Average: {avg_score}/100 | Lowest Score: {min_score}/100 | Pass Rate: {pass_pct}% ({fail_cnt} backlogs)")
         top_3_str = ", ".join([f"#{i} {st['name']} ({st['usn']}): {st['marks']}/100 ({st['grade']})" for i, st in enumerate(all_scores[:3], 1)])
         out.append(f"  * Top 3 Scorers: {top_3_str}")
         

@@ -254,13 +254,7 @@ def plot_grade_distribution(subject_query: str, show: bool = True) -> Optional[s
     students = analytics._load_data()
     q = subject_query.lower().strip()
     
-    target_name = None
-    for k in sorted(analytics.DOMAIN_SUBJECT_MAPPINGS.keys(), key=len, reverse=True):
-        pattern = rf"\b{re.escape(k)}\b" if len(k) <= 4 else rf"\b{re.escape(k)}"
-        if re.search(pattern, q):
-            target_name = analytics.DOMAIN_SUBJECT_MAPPINGS[k][0]
-            break
-            
+    target_name = analytics.resolve_subject_name(q)
     if not target_name:
         for sm in range(1, 9):
             for sub in students[0]["semesters"][str(sm)]["subjects"]:
@@ -308,9 +302,10 @@ def plot_grade_distribution(subject_query: str, show: bool = True) -> Optional[s
     ax.set_ylabel("Student Count (Cohort = 200)", fontweight="bold")
     
     avg_score = sum(all_marks) / total
-    pass_pct = ((total - all_grades.count("F")) / total) * 100
-    title = f"Grade Distribution: {target_name.upper()}"
-    subtitle = f"Course Average: {avg_score:.2f} / 100  |  Pass Rate: {pass_pct:.1f}%  |  Backlogs: {all_grades.count('F')} Students"
+    pass_cnt = total - all_grades.count("F")
+    pass_pct = (pass_cnt / total) * 100
+    title = f"Course Performance & Grade Distribution: {target_name.upper()}"
+    subtitle = f"Total Candidates: {total}  |  Passed: {pass_cnt} ({pass_pct:.1f}%)  |  Backlogs: {all_grades.count('F')}  |  Class Mean: {avg_score:.2f} / 100"
     ax.set_title(f"{title}\n{subtitle}", pad=14, fontweight="bold", fontsize=12)
     
     safe_name = re.sub(r"[^\w\-]", "_", target_name.lower())
@@ -592,13 +587,14 @@ def dispatch_graph_for_query(user_query: str, history: Optional[List[Dict[str, A
     # CASE 5: Subject / Domain Grade Distribution
     # -------------------------------------------------------------
     sub_candidate = user_query if not any(w in q_lower for w in ["previous", "history"]) else last_turn_q
-    if any(w in q_lower for w in ["grade", "distribution"]) or any(k in sub_candidate.lower() for k in analytics.DOMAIN_SUBJECT_MAPPINGS.keys()):
+    if any(w in q_lower for w in ["grade", "distribution", "pass", "passes", "passed"]) or any(k in sub_candidate.lower() for k in analytics.DOMAIN_SUBJECT_MAPPINGS.keys()):
         p = plot_grade_distribution(sub_candidate, show=show)
         if p:
+            resolved_name = analytics.resolve_subject_name(sub_candidate) or "Course"
             return {
                 "chart_path": p,
                 "chart_type": "grade_distribution",
-                "description": "Course Grade Distribution across 200 candidates",
+                "description": f"Performance, Pass Rate & Grade Breakdown for {resolved_name} (Cohort = 200 Students)",
                 "markdown_notice": f"\n\n📊 **[Interactive Chart Displayed & Generated]**: Saved to `{os.path.basename(p)}`"
             }
 
