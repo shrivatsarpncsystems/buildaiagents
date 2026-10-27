@@ -534,12 +534,20 @@ def get_subject_or_domain_analytics(query_text: str) -> Optional[str]:
                     if sub["name"] == sub_name:
                         sub_code = sub["code"]
                         sub_sem = sm_idx
-                        all_scores.append({"usn": s["usn"], "name": s["name"], "marks": sub["marks"], "grade": sub["grade"]})
+                        all_scores.append({
+                            "usn": s["usn"],
+                            "name": s["name"],
+                            "marks": sub["marks"],
+                            "grade": sub["grade"],
+                            "cgpa": s["cgpa"],
+                            "standing": s["standing"],
+                            "backlogs": s["backlogs"]
+                        })
                         
         if not all_scores:
             continue
             
-        all_scores.sort(key=lambda x: x["marks"], reverse=True)
+        all_scores.sort(key=lambda x: (x["marks"], x["cgpa"]), reverse=True)
         marks_vals = [x["marks"] for x in all_scores]
         avg_score = round(sum(marks_vals) / len(marks_vals), 2)
         max_score = marks_vals[0]
@@ -560,10 +568,58 @@ def get_subject_or_domain_analytics(query_text: str) -> Optional[str]:
         out.append(f"  * Grade Breakdown: {grade_str}")
         out.append(f"  * Class Average: {avg_score}/100 | Lowest Score: {min_score}/100")
         out.append(f"  * Highest Score Achieved: {max_score}/100 by: {top_str}")
-        top_3_str = ", ".join([f"#{i} {st['name']} ({st['usn']}): {st['marks']}/100 ({st['grade']})" for i, st in enumerate(all_scores[:3], 1)])
-        out.append(f"  * Top 3 Scorers: {top_3_str}")
+        
+        # Check if user requested top N performers (e.g. 'top 10', 'top 5', 'toppers')
+        num_m = re.search(r"(?:top|first)\s*(\d+)", q_clean)
+        top_k = int(num_m.group(1)) if num_m else (10 if any(w in q_clean for w in ["top", "topper", "toppers", "rank"]) else 3)
+        top_k = max(3, min(top_k, 25))
+        
+        out.append(f"  * Top {top_k} Performers (Ranked by Subject Marks & Cumulative CGPA):")
+        for idx, st in enumerate(all_scores[:top_k], 1):
+            out.append(f"    {idx}. {st['name']} (USN: {st['usn']}) - Marks: {st['marks']}/100 ({st['grade']}) | Cumulative CGPA: {st['cgpa']:.2f}")
         
     return "\n".join(out)
+
+def get_subject_top_scorers(subject_query: str, n: int = 10) -> Optional[Dict[str, Any]]:
+    """
+    Retrieve top N students in a specific course with their marks, grade, and cumulative CGPA.
+    """
+    target_subject = resolve_subject_name(subject_query)
+    if not target_subject:
+        return None
+        
+    students = _load_data()
+    all_scores = []
+    sub_code = ""
+    sub_sem = ""
+    for s in students:
+        for sm_idx, sm in s["semesters"].items():
+            for sub in sm["subjects"]:
+                if sub["name"] == target_subject:
+                    sub_code = sub["code"]
+                    sub_sem = sm_idx
+                    all_scores.append({
+                        "usn": s["usn"],
+                        "name": s["name"],
+                        "marks": sub["marks"],
+                        "grade": sub["grade"],
+                        "cgpa": s["cgpa"],
+                        "standing": s["standing"]
+                    })
+    if not all_scores:
+        return None
+        
+    all_scores.sort(key=lambda x: (x["marks"], x["cgpa"]), reverse=True)
+    n_clamped = max(1, min(n, 30))
+    top_students = all_scores[:n_clamped]
+    
+    return {
+        "subject_name": target_subject,
+        "subject_code": sub_code,
+        "semester": sub_sem,
+        "n": len(top_students),
+        "students": top_students
+    }
 
 def get_subject_analytics(subject_query: str) -> Dict[str, Any]:
     """Backward-compatible analytics helper."""

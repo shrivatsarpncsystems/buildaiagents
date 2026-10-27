@@ -28,29 +28,46 @@ CHARTS_DIR = os.path.join(os.path.dirname(__file__), "charts")
 os.makedirs(CHARTS_DIR, exist_ok=True)
 
 
+_PENDING_CHART = None
+
 def _finalize_plot(fig, filename: str, show: bool = True, title: str = "Academic Analytics Chart") -> str:
     """Save plot to CHARTS_DIR and optionally launch standalone non-interfering GUI viewer."""
+    global _PENDING_CHART
     filepath = os.path.join(CHARTS_DIR, filename)
     fig.savefig(filepath, dpi=300, bbox_inches="tight")
     plt.close(fig)  # Always close figure in main process to free memory and prevent GUI interference
     
+    _PENDING_CHART = {"filepath": filepath, "title": title}
+    
     if show:
-        try:
-            viewer_script = os.path.join(os.path.dirname(__file__), "chart_viewer.py")
-            py_exe = sys.executable
-            # Launch isolated GUI viewer subprocess completely independent of the main terminal
-            subprocess.Popen(
-                [py_exe, viewer_script, filepath, title],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL
-            )
-        except Exception as e:
-            try:
-                os.startfile(filepath)
-            except Exception as e2:
-                print(f"[Note: GUI display window: {e2}]")
+        display_latest_chart()
                 
     return filepath
+
+def display_latest_chart() -> bool:
+    """Launch the standalone GUI viewer for the most recently generated chart."""
+    global _PENDING_CHART
+    if not _PENDING_CHART:
+        return False
+        
+    filepath = _PENDING_CHART["filepath"]
+    title = _PENDING_CHART["title"]
+    try:
+        viewer_script = os.path.join(os.path.dirname(__file__), "chart_viewer.py")
+        py_exe = sys.executable
+        subprocess.Popen(
+            [py_exe, viewer_script, filepath, title],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL
+        )
+        return True
+    except Exception as e:
+        try:
+            os.startfile(filepath)
+            return True
+        except Exception as e2:
+            print(f"[Note: GUI display window: {e2}]")
+            return False
 
 
 def plot_student_semester_marks(identifier: str, semester: int, show: bool = True) -> Optional[str]:
@@ -245,6 +262,52 @@ def plot_top_scorers(n: int = 5, semester: Optional[int] = None, show: bool = Tr
     ax.set_title(chart_title, pad=14, fontweight="bold", fontsize=13)
     
     return _finalize_plot(fig, filename, show=show)
+
+
+def plot_subject_top_scorers(subject_query: str, n: int = 10, show: bool = True) -> Optional[str]:
+    """
+    Comparison bar chart for top N students in a specific academic course,
+    displaying both subject marks (out of 100) and cumulative CGPA.
+    """
+    sub_data = analytics.get_subject_top_scorers(subject_query, n=n)
+    if not sub_data or not sub_data["students"]:
+        return None
+        
+    subject_name = sub_data["subject_name"]
+    students_list = sub_data["students"]
+    n_count = len(students_list)
+    
+    rev_students = list(reversed(students_list))
+    labels = [f"#{n_count - i} {s['name']}\n({s['usn']})" for i, s in enumerate(rev_students)]
+    marks = [s["marks"] for s in rev_students]
+    
+    fig, ax = plt.subplots(figsize=(10.5, max(4.8, n_count * 0.58)))
+    colors = sns.color_palette("mako", len(marks))
+    bars = ax.barh(labels, marks, color=colors, height=0.55, edgecolor="#1F2937", linewidth=1.1, zorder=3)
+    
+    for bar, s in zip(bars, rev_students):
+        w = bar.get_width()
+        ax.text(
+            w + 1.0,
+            bar.get_y() + bar.get_height() / 2.0,
+            f"{s['marks']}/100 ({s['grade']}) | CGPA: {s['cgpa']:.2f}",
+            ha="left",
+            va="center",
+            fontsize=9.0,
+            fontweight="bold",
+            color="#111827"
+        )
+        
+    ax.set_xlim(0, 118)
+    ax.set_xlabel("Subject Marks (out of 100)", fontweight="bold")
+    
+    title = f"Top {n_count} Performers: {subject_name.upper()}"
+    subtitle = f"Course Code: {sub_data['subject_code']} | Semester {sub_data['semester']} | Marks & Cumulative CGPA Comparison"
+    ax.set_title(f"{title}\n{subtitle}", pad=14, fontweight="bold", fontsize=12)
+    
+    safe_name = re.sub(r"[^\w\-]", "_", subject_name.lower())
+    filename = f"top_{n_count}_{safe_name}.png"
+    return _finalize_plot(fig, filename, show=show, title=f"Top {n_count} in {subject_name}")
 
 
 def plot_grade_distribution(subject_query: str, show: bool = True) -> Optional[str]:
@@ -556,11 +619,25 @@ def dispatch_graph_for_query(user_query: str, history: Optional[List[Dict[str, A
             }
 
     # -------------------------------------------------------------
-    # CASE 3: Top Scorers (Semester or Overall Batch)
+    # CASE 3: Top Scorers (Specific Subject, Semester, or Overall Batch)
     # -------------------------------------------------------------
     if any(w in q_lower for w in ["top", "topper", "toppers", "rank", "merit", "highest"]) or (last_turn_q and any(w in last_turn_q for w in ["top", "topper", "toppers", "rank"])):
         num_match = re.search(r"(?:top|first)\s*(\d+)", q_lower) or (re.search(r"(?:top|first)\s*(\d+)", last_turn_q) if last_turn_q else None)
         n_count = int(num_match.group(1)) if num_match else 5
+        
+        # Check if query asks for toppers in a specific course (e.g. Operating Systems, ML, Discrete Math)
+        sub_candidate = q_lower if not any(w in q_lower for w in ["previous", "history"]) else last_turn_q
+        resolved_sub = analytics.resolve_subject_name(sub_candidate)
+        if resolved_sub:
+            p = plot_subject_top_scorers(resolved_sub, n=n_count, show=show)
+            if p:
+                return {
+                    "chart_path": p,
+                    "chart_type": "subject_top_scorers",
+                    "description": f"Top {n_count} Performers in {resolved_sub} (Marks & CGPA Comparison)",
+                    "markdown_notice": f"\n\n📊 **[Interactive Chart Displayed & Generated]**: Saved to `{os.path.basename(p)}`"
+                }
+
         p = plot_top_scorers(n=n_count, semester=target_sem if (direct_sem or (last_turn_q and "sem" in last_turn_q)) else None, show=show)
         if p:
             return {

@@ -635,11 +635,11 @@ if __name__ == "__main__":
             continue
 
         if visualizer.is_graph_requested(user_input):
-            print("\nGenerating academic visual chart (Pandas + Seaborn + Matplotlib)...")
+            print("\nSearching PDF transcripts and computing academic visual analytics...")
         else:
             print("\nSearching PDF transcripts and computing analytics...")
 
-        context_str, citations_str = route_and_build_context(user_input, history=conversation_history, show_graph=True)
+        context_str, citations_str = route_and_build_context(user_input, history=conversation_history, show_graph=False)
         history_str = format_chat_history(conversation_history, k=MAX_HISTORY_TURNS)
 
         print("\n" + "-" * 78)
@@ -656,6 +656,8 @@ if __name__ == "__main__":
         print("\n" + "-" * 78)
 
         if visualizer.is_graph_requested(user_input):
+            # Display graph window AFTER the information text has streamed completely
+            visualizer.display_latest_chart()
             print("📊 Interactive graph displayed on screen and saved to charts/ directory.\n")
         else:
             print("")
