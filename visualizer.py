@@ -1,7 +1,10 @@
 import os
+import sys
+import subprocess
 import re
 from typing import Optional, Dict, Any, List
 import matplotlib
+matplotlib.use("Agg")  # Clean headless rendering; GUI viewer runs in isolated subprocess
 import matplotlib.pyplot as plt
 import seaborn as sns
 import pandas as pd
@@ -25,21 +28,28 @@ CHARTS_DIR = os.path.join(os.path.dirname(__file__), "charts")
 os.makedirs(CHARTS_DIR, exist_ok=True)
 
 
-def _finalize_plot(fig, filename: str, show: bool = True) -> str:
-    """Save plot to CHARTS_DIR and optionally show interactive TkAgg window."""
+def _finalize_plot(fig, filename: str, show: bool = True, title: str = "Academic Analytics Chart") -> str:
+    """Save plot to CHARTS_DIR and optionally launch standalone non-interfering GUI viewer."""
     filepath = os.path.join(CHARTS_DIR, filename)
     fig.savefig(filepath, dpi=300, bbox_inches="tight")
+    plt.close(fig)  # Always close figure in main process to free memory and prevent GUI interference
+    
     if show:
         try:
-            plt.show(block=False)
-            plt.pause(0.3)
+            viewer_script = os.path.join(os.path.dirname(__file__), "chart_viewer.py")
+            py_exe = sys.executable
+            # Launch isolated GUI viewer subprocess completely independent of the main terminal
+            subprocess.Popen(
+                [py_exe, viewer_script, filepath, title],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL
+            )
         except Exception as e:
             try:
-                plt.show()
+                os.startfile(filepath)
             except Exception as e2:
                 print(f"[Note: GUI display window: {e2}]")
-    else:
-        plt.close(fig)
+                
     return filepath
 
 

@@ -615,8 +615,11 @@ if __name__ == "__main__":
     while True:
         try:
             user_input = input("Ask a question about the college exam results (q to quit, help for menu): ").strip()
-        except (KeyboardInterrupt, EOFError):
-            print("\nExiting session. Goodbye!")
+        except KeyboardInterrupt:
+            print("\n(Session active. Type 'q' to quit, 'help' for menu)")
+            continue
+        except EOFError:
+            print("\nSession ended. Goodbye!")
             break
 
         if not user_input:
