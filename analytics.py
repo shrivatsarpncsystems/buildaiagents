@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import difflib
 from typing import Dict, Any, List, Optional, Tuple
 
 DATA_FILE = os.path.join(os.path.dirname(__file__), "students_results.json")
@@ -60,7 +61,7 @@ def get_top_scorers(n: int = 5, semester: Optional[int] = None) -> Dict[str, Any
         }
 
 def find_student(identifier: str) -> Optional[Dict[str, Any]]:
-    """Find a student by USN (e.g. 1RV21CS042) or by full/partial name."""
+    """Find a student by USN (e.g. 1RV21CS042) or by full/partial/typo-tolerant name."""
     students = _load_data()
     q = identifier.strip().lower()
     
@@ -69,20 +70,56 @@ def find_student(identifier: str) -> Optional[Dict[str, Any]]:
         if s["usn"].lower() == q:
             return s
             
-    # 2. Exact or substring Name match
-    matches = [s for s in students if q in s["name"].lower()]
+    # 2. Exact, substring, or fuzzy name match
+    matches = find_students_by_name(identifier)
     if matches:
         return matches[0]
         
     return None
 
 def find_students_by_name(name: str) -> List[Dict[str, Any]]:
-    """Find all students matching a full or partial name (handles name collisions)."""
+    """
+    Find all students matching a full, partial, or typo-tolerant name
+    (handles typos like 'divya bath' -> 'Divya Bhat', 'yash varma' -> 'Yash Verma').
+    """
     students = _load_data()
     q = name.strip().lower()
-    if not q:
+    if not q or len(q) < 2:
         return []
-    return [s for s in students if q in s["name"].lower()]
+        
+    # 1. Exact full name match
+    exact = [s for s in students if s["name"].lower() == q]
+    if exact:
+        return exact
+        
+    # 2. Substring match
+    substr = [s for s in students if q in s["name"].lower()]
+    if substr:
+        return substr
+        
+    # 3. Fuzzy match full name using difflib
+    name_map: Dict[str, List[Dict[str, Any]]] = {}
+    for s in students:
+        nl = s["name"].lower()
+        if nl not in name_map:
+            name_map[nl] = []
+        name_map[nl].append(s)
+        
+    close = difflib.get_close_matches(q, name_map.keys(), n=2, cutoff=0.7)
+    if close:
+        results = []
+        for c in close:
+            results.extend(name_map[c])
+        return results
+        
+    # 4. Token match with fallback
+    tokens = [tok for tok in q.split() if len(tok) >= 3]
+    if tokens:
+        matches = [s for s in students if any(tok in s["name"].lower() for tok in tokens)]
+        if matches:
+            return matches
+            
+    return []
 
 def get_student_scorecard(identifier: str) -> Dict[str, Any]:
     """Get full 8-semester scorecard and analytics for a student."""
@@ -295,6 +332,18 @@ def get_subject_or_domain_analytics(query_text: str) -> Optional[str]:
             if matched_subjects:
                 break
                 
+    # 3. Fuzzy match for typos in domain/course names (e.g. "machin learning", "operatng system")
+    if not matched_subjects:
+        words = q_clean.split()
+        phrases = [f"{words[i]} {words[i+1]}" for i in range(len(words)-1)] + words
+        for p in phrases:
+            if len(p) >= 4:
+                close_k = difflib.get_close_matches(p, DOMAIN_SUBJECT_MAPPINGS.keys(), n=1, cutoff=0.75)
+                if close_k:
+                    matched_subjects = DOMAIN_SUBJECT_MAPPINGS[close_k[0]]
+                    domain_name = close_k[0].title()
+                    break
+
     if not matched_subjects:
         return None
         
