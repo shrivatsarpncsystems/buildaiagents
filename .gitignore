@@ -4,3 +4,4 @@ __pycache__/
 chroma_langchain_db/
 chroma_college_db/
 .vscode/
+charts/

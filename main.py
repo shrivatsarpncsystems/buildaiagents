@@ -1,9 +1,11 @@
+import os
 import re
 import json
 from langchain_ollama.llms import OllamaLLM
 from langchain_core.prompts import ChatPromptTemplate
 from vector import retriever, retrieve_with_sources
 import analytics
+import visualizer
 
 from typing import Optional
 
@@ -41,6 +43,8 @@ STRICT INSTRUCTIONS FOR YOUR RESPONSE:
      a. Candidate Header: Student Name, USN, and Semester SGPA.
      b. Individual Course Breakdown: List EVERY course individually with its name, marks obtained out of 100, individual percentage (e.g. 93.0%), and grade awarded.
      c. Total Marks & Aggregate Percentage: Clearly state Total Marks Obtained out of maximum marks (e.g. 562 / 600) and the Overall Semester Percentage (e.g. 93.67%).
+   - For graph or visualization queries (e.g. "give graph for previous conversation", "show bar chart of semester 5 marks", "plot comparison"):
+     Explicitly announce that the requested visual chart has been rendered in an interactive display window and saved to the charts directory, followed by a concise summary of the key metrics shown in the visual.
    - If multiple candidates share the same name (e.g. Divya Bhat), always distinguish them explicitly by USN and rank.
 5. STRICT GROUNDING & REFUSAL: Do NOT invent student marks, ranks, or policies. If the question cannot be answered from the provided records or conversation history (e.g. hostel fees, sports, cafeteria menu), explicitly state:
    "I do not have supporting context in the official college examination records to answer this question."
@@ -167,11 +171,12 @@ def extract_recent_entities(history, max_turns=MAX_HISTORY_TURNS):
         "last_turn_intent": last_turn_intent
     }
 
-def route_and_build_context(user_query: str, history=None):
+def route_and_build_context(user_query: str, history=None, show_graph: bool = True):
     """
     Intelligent Query Router:
     Combines deterministic analytics calculation engine with Chroma vector search.
     Resolves conversational pronouns and references across multi-turn dialogs (k >= 6).
+    Dispatches interactive visual charts (matplotlib, seaborn, pandas) when requested.
     """
     if history is None:
         history = []
@@ -208,12 +213,13 @@ def route_and_build_context(user_query: str, history=None):
         "names", "former", "latter", "first one", "second one"
     ]
     has_pronoun_reference = any(re.search(rf"\b{re.escape(w)}\b", q_lower) for w in ref_pronouns) or "thei respectie" in q_lower or "their respectie" in q_lower
+    has_followup_reference = has_pronoun_reference or any(w in q_lower for w in ["previous", "prior", "last", "for this", "for that", "earlier", "above", "them", "both"])
     is_compare_intent = any(w in q_lower for w in [
         "compare", "comparison", "difference", "versus", "vs", "between",
         "who scored higher", "who has higher", "who is better", "which one", "higher cgpa"
     ])
     is_marks_followup = any(w in q_lower for w in ["mark", "marks", "score", "scores", "grade", "grades"]) and (
-        has_pronoun_reference or any(w in q_lower for w in ["give", "show", "what", "their", "thei", "respectie", "respective"])
+        has_followup_reference or any(w in q_lower for w in ["give", "show", "what", "their", "thei", "respectie", "respective"])
     )
 
     # 1. Comparison of Two Students (Direct USNs or Follow-up referencing recent students)
@@ -222,10 +228,10 @@ def route_and_build_context(user_query: str, history=None):
         target_compare_usns = direct_usns[:2]
     elif is_compare_intent and len(direct_usns) == 1 and len(recent_usns) >= 1:
         target_compare_usns = [recent_usns[0], direct_usns[0]]
-    elif (is_compare_intent or (has_pronoun_reference and last_intent == "comparison")) and len(direct_usns) == 0 and len(recent_usns) >= 2:
+    elif (is_compare_intent or (has_followup_reference and (last_intent == "comparison" or len(recent_usns) >= 2))) and len(direct_usns) == 0 and len(recent_usns) >= 2:
         target_compare_usns = recent_usns[:2]
 
-    if target_compare_usns and (is_compare_intent or len(direct_usns) >= 2 or any(k in q_lower for k in ["name", "score", "cgpa", "rank", "sem", "grade", "both", "they", "their", "who", "which"])):
+    if target_compare_usns:
         u1, u2 = target_compare_usns[0], target_compare_usns[1]
         comp_res = analytics.compare_students(u1, u2)
         st1 = analytics.find_student(u1)
@@ -289,16 +295,17 @@ def route_and_build_context(user_query: str, history=None):
         # Check if user query mentions a student name
         clean_name = re.sub(r"\b(?:sem|semester|semister|semster|s)\s*[-:]?\s*[1-8](?:st|nd|rd|th)?\b", "", q_lower)
         clean_name = re.sub(r"\b[1-8](?:st|nd|rd|th)?\s*(?:sem|semester|semister|semster|sems)\b", "", clean_name)
-        clean_name = re.sub(r"\b(?:score|scores|marks|mark|percentage|percent|result|results|grade|grades|of|in|for|student|candidate|show|what|calculate|give)\b", " ", clean_name).strip()
+        clean_name = re.sub(r"\b(?:score|scores|marks|mark|percentage|percent|result|results|grade|grades|of|in|for|student|candidate|show|what|calculate|give|graph|plot|chart|visualize|bar)\b", " ", clean_name).strip()
         if clean_name and len(clean_name) >= 3:
             matched_students = analytics.find_students_by_name(clean_name)
             if matched_students:
                 target_st_id = matched_students[0]["usn"]
-        if not target_st_id and (has_pronoun_reference and recent_usns):
+        if not target_st_id and (has_followup_reference and recent_usns):
             target_st_id = recent_usns[0]
 
-    if sem_from_query and target_st_id and not target_compare_usns:
-        additional_data += f"\n{analytics.get_student_semester_breakdown(target_st_id, sem_from_query)}\n"
+    effective_sem = sem_from_query or (recent_sems[0] if (has_followup_reference and recent_sems) else None)
+    if effective_sem and target_st_id and not target_compare_usns:
+        additional_data += f"\n{analytics.get_student_semester_breakdown(target_st_id, effective_sem)}\n"
         citations_list.append("[Source: students_results.json / Autonomous Examination Database]")
         citations_list.append("[Source: college_exam_results.pdf]")
 
@@ -451,6 +458,18 @@ def route_and_build_context(user_query: str, history=None):
         citations_list.append("[Source: students_results.json / Autonomous Examination Database]")
         citations_list.append("[Source: college_exam_results.pdf]")
 
+    # 13. Check if user explicitly requested an Academic Visual Chart / Graph
+    if visualizer.is_graph_requested(user_query):
+        chart_res = visualizer.dispatch_graph_for_query(user_query, history=history, show=show_graph)
+        if chart_res:
+            additional_data += (
+                f"\n[OFFICIAL VISUAL GRAPH GENERATED & DISPLAYED]:\n"
+                f"Description: {chart_res['description']}\n"
+                f"Interactive GUI Window: Rendered on screen (via matplotlib TkAgg backend)\n"
+                f"Saved Artifact File: {chart_res['chart_path']}\n"
+            )
+            citations_list.append(f"[Visual Chart: {os.path.basename(chart_res['chart_path'])}]")
+
     # 7. Semantic Vector Retrieval from PDF via Chroma
     # Only retrieve from Chroma if additional_data does not already contain verified calculations/records,
     # avoiding random irrelevant PDF pages from polluting the grounded context.
@@ -518,6 +537,15 @@ def print_erp_capabilities_menu():
   • Grading Criteria       : 'What is the grading policy and criteria for Grade O and A+?'
   • Out-of-Context Defense : 'What is the cafeteria lunch menu?' (Polite refusal)
   • Audit Citations        : Every answer cites exact PDF Page numbers and database records.
+
+[10] VISUAL CHARTS & GRAPHS (PANDAS, SEABORN & MATPLOTLIB):
+  • Student Comparison     : 'Compare student 1RV21CS028 and 1RV21CS007 and give bar graph'
+  • Semester Marks Plot    : 'Show bar graph of marks for 1RV21CS028 in Semester 5'
+  • Follow-Up Graphing     : 'Give graph for previous conversation' (Visualizes prior topic)
+  • Top Scorers Chart      : 'Plot bar chart of top 5 students in Semester 3'
+  • Grade Distribution     : 'Give chart for Machine Learning grade distribution'
+  • Cohort Progression     : 'Show bar graph of cohort average across all 8 semesters'
+  • Placement Analytics    : 'Show placement eligibility cutoff graph'
 """)
     print("=" * 80 + "\n")
 
@@ -527,16 +555,17 @@ def print_banner():
     print("  B.Tech Computer Science & Engineering (Batch 2021-2025 | 200 Students)")
     print("  Powered by Local RAG (Chroma + Ollama Llama 3.2:3b)")
     print(f"  Conversational Memory: Active (Remembers last {MAX_HISTORY_TURNS} conversation turns)")
+    print("  Interactive Visualizer: Enabled (Pandas + Seaborn + Matplotlib TkAgg)")
     print("=" * 80)
     print("Quick Navigation:")
     print("  • Type 'help' or 'menu' to see the complete list of all ERP operations.")
     print("  • Type 'q' or 'quit' to exit.")
     print("Try Asking:")
     print("  1. 'Compare student 1RV21CS028 and 1RV21CS007'")
-    print("  2. 'What are their respective names?' (Multi-turn follow-up test)")
-    print("  3. 'Who is best at maths overall?'")
-    print("  4. 'Who is eligible for Tier-1 company placements?'")
-    print("  5. 'Show marks of 1RV21CS028 in Semester 5'")
+    print("  2. 'Give graph for previous conversation' (Interactive visual popup)")
+    print("  3. 'Show marks of 1RV21CS028 in Semester 5 with bar graph'")
+    print("  4. 'Who is best at maths overall?'")
+    print("  5. 'Who is eligible for Tier-1 company placements?'")
     print("  6. 'What is the grade distribution in Machine Learning?'")
     print("  7. 'Is student 1RV21CS028 eligible for graduation?'")
     print("=" * 80 + "\n")
@@ -562,8 +591,12 @@ if __name__ == "__main__":
             print_erp_capabilities_menu()
             continue
 
-        print("\nSearching PDF transcripts and computing analytics...")
-        context_str, citations_str = route_and_build_context(user_input, history=conversation_history)
+        if visualizer.is_graph_requested(user_input):
+            print("\nGenerating academic visual chart (Pandas + Seaborn + Matplotlib)...")
+        else:
+            print("\nSearching PDF transcripts and computing analytics...")
+
+        context_str, citations_str = route_and_build_context(user_input, history=conversation_history, show_graph=True)
         history_str = format_chat_history(conversation_history, k=MAX_HISTORY_TURNS)
 
         print("\n" + "-" * 78)
@@ -577,7 +610,12 @@ if __name__ == "__main__":
         }):
             full_response += chunk
             print(chunk, end="", flush=True)
-        print("\n" + "-" * 78 + "\n")
+        print("\n" + "-" * 78)
+
+        if visualizer.is_graph_requested(user_input):
+            print("📊 Interactive graph displayed on screen and saved to charts/ directory.\n")
+        else:
+            print("")
 
         # Save to conversational memory buffer (maintains at least k=6 turns)
         conversation_history.append({

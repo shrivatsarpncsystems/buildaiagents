@@ -6,6 +6,58 @@ from typing import Dict, Any, List, Optional, Tuple
 
 DATA_FILE = os.path.join(os.path.dirname(__file__), "students_results.json")
 
+WORD_TO_NUM = {
+    "first": 1, "1st": 1, "one": 1, "1": 1,
+    "second": 2, "2nd": 2, "two": 2, "2": 2,
+    "third": 3, "3rd": 3, "three": 3, "3": 3,
+    "fourth": 4, "4th": 4, "four": 4, "4": 4,
+    "fifth": 5, "5th": 5, "five": 5, "5": 5,
+    "sixth": 6, "6th": 6, "six": 6, "6": 6,
+    "seventh": 7, "7th": 7, "seven": 7, "7": 7,
+    "eighth": 8, "8th": 8, "eight": 8, "8": 8,
+}
+
+def extract_semester(text: str) -> Optional[int]:
+    """
+    Robust semester extractor supporting ordinals (3rd, third), words,
+    misspellings (semister, semster), prefixes (sem 3, 3rd sem), and suffixes.
+    """
+    if not text:
+        return None
+    t = text.lower()
+    
+    # 1. Pattern: <sem_word> <num/ordinal/word> e.g. "sem 3", "semester 3rd", "semister third", "sem-2"
+    m1 = re.search(r"\b(?:sem|semester|semister|semster|s)\s*[-:]?\s*([1-8](?:st|nd|rd|th)?|first|second|third|fourth|fifth|sixth|seventh|eighth)\b", t)
+    if m1:
+        val = m1.group(1).lower()
+        if val in WORD_TO_NUM:
+            return WORD_TO_NUM[val]
+        num_str = re.sub(r"[^\d]", "", val)
+        if num_str and 1 <= int(num_str) <= 8:
+            return int(num_str)
+            
+    # 2. Pattern: <num/ordinal/word> <sem_word> e.g. "3rd semister", "third semester", "3 sem", "2nd sem"
+    m2 = re.search(r"\b([1-8](?:st|nd|rd|th)?|first|second|third|fourth|fifth|sixth|seventh|eighth)\s*[-:]?\s*(?:sem|semester|semister|semster|sems)\b", t)
+    if m2:
+        val = m2.group(1).lower()
+        if val in WORD_TO_NUM:
+            return WORD_TO_NUM[val]
+        num_str = re.sub(r"[^\d]", "", val)
+        if num_str and 1 <= int(num_str) <= 8:
+            return int(num_str)
+            
+    # 3. Direct mention with ordinal when in context of student/exam/top
+    m3 = re.search(r"\b(?:in|of|for)?\s*([1-8](?:st|nd|rd|th)|first|second|third|fourth|fifth|sixth|seventh|eighth)\b", t)
+    if m3 and any(w in t for w in ["top", "topper", "toppers", "student", "students", "fail", "failed", "sgpa", "rank", "marks", "exam"]):
+        val = m3.group(1).lower()
+        if val in WORD_TO_NUM:
+            return WORD_TO_NUM[val]
+        num_str = re.sub(r"[^\d]", "", val)
+        if num_str and 1 <= int(num_str) <= 8:
+            return int(num_str)
+            
+    return None
+
 def _load_data() -> List[Dict[str, Any]]:
     if not os.path.exists(DATA_FILE):
         raise FileNotFoundError(f"Data file {DATA_FILE} not found. Please run generate_college_data.py first.")
