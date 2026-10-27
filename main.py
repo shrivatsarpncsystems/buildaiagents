@@ -125,7 +125,7 @@ def route_and_build_context(user_query: str, history=None):
 
     # Pronoun / follow-up reference detection
     ref_pronouns = [
-        "they", "their", "thei", "them", "both", "these", "those",
+        "they", "their", "them", "both", "these", "those",
         "he", "she", "his", "her", "the two", "the students", "respective",
         "names", "former", "latter", "first one", "second one"
     ]
@@ -216,8 +216,15 @@ def route_and_build_context(user_query: str, history=None):
                 additional_data += f"Highest Subject: {sc['highest_subject']} | Lowest: {sc['lowest_subject']}\n"
                 citations_list.append("[Source: students_results.json / Autonomous Examination Database]")
 
-    # 3. Name Search (Detecting if multiple students share that name)
-    elif not any(w in q_lower for w in ["top", "average", "class", "policy", "grade", "menu", "fee", "compare", "fail", "arrear", "topper"]):
+    # 3. Check for Subject / Domain Academic Analytics (e.g. "Who is best at maths overall", "ML toppers", "OS average")
+    subj_data = analytics.get_subject_or_domain_analytics(q_lower)
+    if subj_data:
+        additional_data += f"\n{subj_data}\n"
+        citations_list.append("[Source: students_results.json / Autonomous Examination Database]")
+        citations_list.append("[Source: college_exam_results.pdf]")
+
+    # 4. Name Search (Detecting if multiple students share that name)
+    elif not any(w in q_lower for w in ["top", "average", "class", "policy", "grade", "menu", "fee", "compare", "fail", "arrear", "topper", "best", "highest", "lowest"]):
         name_matches = analytics.find_students_by_name(user_query)
         if len(name_matches) > 1:
             additional_data += f"\n[MULTIPLE CANDIDATES SHARING NAME '{user_query}' ({len(name_matches)} Students)]:\n"
@@ -235,12 +242,12 @@ def route_and_build_context(user_query: str, history=None):
             additional_data += f"SGPA by Semester: {json.dumps(sc['sgpa_by_semester'])}\n"
             citations_list.append("[Source: students_results.json / Autonomous Examination Database]")
 
-    # 4. Check for Top Scorers / Rank List (Support variable N e.g. top 3, top 5, top 10, toppers)
+    # 5. Check for Overall Batch Top Scorers / Rank List (Support variable N e.g. top 3, top 5, top 10, toppers)
     is_top_query = bool(
         re.search(r"top\s*(?:\d+)?\s*(?:scorer|scorers|student|students|candidate|candidates|rank|topper|toppers|batch|cgpa)", q_lower)
         or any(keyword in q_lower for keyword in ["topper", "toppers", "rank 1", "highest cgpa", "merit list", "first rank", "highest score"])
     )
-    if is_top_query:
+    if is_top_query and not subj_data:
         sem_match = re.search(r"(?:sem|semester)\s*([1-8])", q_lower)
         target_sem = int(sem_match.group(1)) if sem_match else None
         
@@ -259,8 +266,8 @@ def route_and_build_context(user_query: str, history=None):
         citations_list.append("[Source: college_exam_results.pdf, Page 1]")
         citations_list.append("[Source: students_results.json / Autonomous Examination Database]")
 
-    # 5. Check for Batch / Class Average & Statistics
-    if any(keyword in q_lower for keyword in ["average", "class average", "batch average", "pass percentage", "overall stats", "statistics"]):
+    # 6. Check for Batch / Class Average & Statistics (if not asking for subject average)
+    if any(keyword in q_lower for keyword in ["average", "class average", "batch average", "pass percentage", "overall stats", "statistics"]) and not subj_data:
         sem_match = re.search(r"(?:sem|semester)\s*([1-8])", q_lower)
         target_sem = int(sem_match.group(1)) if sem_match else None
         

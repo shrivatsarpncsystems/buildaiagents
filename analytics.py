@@ -1,5 +1,6 @@
 import json
 import os
+import re
 from typing import Dict, Any, List, Optional, Tuple
 
 DATA_FILE = os.path.join(os.path.dirname(__file__), "students_results.json")
@@ -177,49 +178,191 @@ def calculate_batch_analytics(semester: Optional[int] = None) -> Dict[str, Any]:
             "semester_sgpa_averages": sem_averages
         }
 
-def get_subject_analytics(subject_query: str) -> Dict[str, Any]:
-    """Analyze subject scores across all students."""
+DOMAIN_SUBJECT_MAPPINGS = {
+    # Mathematics
+    "maths": ["Engineering Mathematics I", "Engineering Mathematics II", "Discrete Mathematical Structures"],
+    "math": ["Engineering Mathematics I", "Engineering Mathematics II", "Discrete Mathematical Structures"],
+    "mathematics": ["Engineering Mathematics I", "Engineering Mathematics II", "Discrete Mathematical Structures"],
+    "discrete math": ["Discrete Mathematical Structures"],
+    "discrete mathematical": ["Discrete Mathematical Structures"],
+    "discrete": ["Discrete Mathematical Structures"],
+    "math 1": ["Engineering Mathematics I"],
+    "maths 1": ["Engineering Mathematics I"],
+    "math 2": ["Engineering Mathematics II"],
+    "maths 2": ["Engineering Mathematics II"],
+
+    # Core CS Theory & Systems
+    "data structures": ["Data Structures & Applications", "Data Structures Laboratory"],
+    "dsa": ["Data Structures & Applications", "Data Structures Laboratory"],
+    "algorithms": ["Design & Analysis of Algorithms", "Algorithms Laboratory"],
+    "daa": ["Design & Analysis of Algorithms", "Algorithms Laboratory"],
+    "operating systems": ["Operating Systems"],
+    "os": ["Operating Systems"],
+    "database": ["Database Management Systems", "DBMS Laboratory"],
+    "dbms": ["Database Management Systems", "DBMS Laboratory"],
+    "sql": ["Database Management Systems", "DBMS Laboratory"],
+    "computer networks": ["Computer Networks", "Computer Networks Lab"],
+    "networking": ["Computer Networks", "Computer Networks Lab"],
+    "networks": ["Computer Networks", "Computer Networks Lab"],
+    "cn": ["Computer Networks", "Computer Networks Lab"],
+    "compiler": ["Compiler Design"],
+    "compiler design": ["Compiler Design"],
+    "theory of computation": ["Theory of Computation & Automata"],
+    "automata": ["Theory of Computation & Automata"],
+    "toc": ["Theory of Computation & Automata"],
+    "computer organization": ["Computer Organization & Architecture"],
+    "coa": ["Computer Organization & Architecture"],
+    "software engineering": ["Software Engineering & Agile"],
+    "agile": ["Software Engineering & Agile"],
+    "web development": ["Web Technologies & Frameworks", "Web Development Lab"],
+    "web technologies": ["Web Technologies & Frameworks", "Web Development Lab"],
+    "web tech": ["Web Technologies & Frameworks", "Web Development Lab"],
+    "web": ["Web Technologies & Frameworks", "Web Development Lab"],
+    "microprocessors": ["Microprocessors & Embedded Systems"],
+    "embedded systems": ["Microprocessors & Embedded Systems"],
+
+    # Advanced AI, Data & Security
+    "machine learning": ["Machine Learning & Pattern Recognition", "Machine Learning Laboratory"],
+    "ml": ["Machine Learning & Pattern Recognition", "Machine Learning Laboratory"],
+    "artificial intelligence": ["Artificial Intelligence & Expert Systems", "AI & Intelligence Lab"],
+    "ai": ["Artificial Intelligence & Expert Systems", "AI & Intelligence Lab"],
+    "deep learning": ["Deep Learning & Generative AI"],
+    "generative ai": ["Deep Learning & Generative AI"],
+    "genai": ["Deep Learning & Generative AI"],
+    "gen ai": ["Deep Learning & Generative AI"],
+    "big data": ["Big Data Analytics & Spark"],
+    "spark": ["Big Data Analytics & Spark"],
+    "nlp": ["Elective I: Natural Language Processing"],
+    "natural language processing": ["Elective I: Natural Language Processing"],
+    "iot": ["Internet of Things & Robotics"],
+    "robotics": ["Internet of Things & Robotics"],
+    "cloud": ["Cloud Computing & Virtualization"],
+    "cloud computing": ["Cloud Computing & Virtualization"],
+    "cryptography": ["Cryptography & Network Security", "Security & Pentesting Lab"],
+    "security": ["Cryptography & Network Security", "Security & Pentesting Lab"],
+    "pentesting": ["Security & Pentesting Lab"],
+    "blockchain": ["Distributed Systems & Blockchain"],
+    "distributed systems": ["Distributed Systems & Blockchain"],
+    "devops": ["Elective II: DevOps & Microservices"],
+    "microservices": ["Elective II: DevOps & Microservices"],
+
+    # Programming Languages
+    "java": ["Object Oriented Programming with Java", "Java Laboratory"],
+    "oop": ["Object Oriented Programming with Java", "Java Laboratory"],
+    "c programming": ["C Programming & Problem Solving", "C Programming Lab"],
+    "c language": ["C Programming & Problem Solving", "C Programming Lab"],
+
+    # Sciences / Projects
+    "physics": ["Engineering Physics", "Engineering Physics Lab"],
+    "chemistry": ["Engineering Chemistry", "Engineering Chemistry Lab"],
+    "english": ["Technical English"],
+    "electrical": ["Basic Electrical Engineering"],
+    "electronics": ["Basic Electronics Engineering"],
+    "graphics": ["Engineering Graphics"],
+    "project": ["Major Project Phase I", "Major Project Phase II"],
+    "major project": ["Major Project Phase I", "Major Project Phase II"],
+    "seminar": ["Technical Seminar & Paper Publication"],
+}
+
+def get_subject_or_domain_analytics(query_text: str) -> Optional[str]:
+    """
+    Intelligently identifies if a query asks about a specific academic course or subject domain
+    (e.g. 'Who is best at maths overall', 'Topper in Machine Learning', 'Average score in DBMS').
+    Computes exact mathematical aggregation, course-by-course highlights, and top scorers.
+    """
     students = _load_data()
-    q = subject_query.strip().lower()
+    q_clean = query_text.lower().strip()
     
-    # Collect all subject entries matching query
-    matching_subject_name = None
-    all_scores = []
+    matched_subjects = []
+    domain_name = ""
     
-    for s in students:
+    # 1. Match against domain mappings (sorted by length descending)
+    for k in sorted(DOMAIN_SUBJECT_MAPPINGS.keys(), key=len, reverse=True):
+        pattern = rf"\b{re.escape(k)}\b" if len(k) <= 4 else rf"\b{re.escape(k)}"
+        if re.search(pattern, q_clean):
+            matched_subjects = DOMAIN_SUBJECT_MAPPINGS[k]
+            domain_name = k.title()
+            break
+            
+    # 2. Match directly against any course name or code in the curriculum
+    if not matched_subjects:
         for sm in range(1, 9):
-            for sub in s["semesters"][str(sm)]["subjects"]:
-                if q in sub["name"].lower() or q in sub["code"].lower():
-                    if matching_subject_name is None:
-                        matching_subject_name = sub["name"]
-                    all_scores.append({
-                        "student_usn": s["usn"],
-                        "student_name": s["name"],
-                        "marks": sub["marks"],
-                        "grade": sub["grade"],
-                        "semester": sm
-                    })
-                    
-    if not all_scores:
-        return {"error": f"No subject matching '{subject_query}' found in curriculum."}
+            for sub in students[0]["semesters"][str(sm)]["subjects"]:
+                if sub["name"].lower() in q_clean or sub["code"].lower() in q_clean:
+                    matched_subjects = [sub["name"]]
+                    domain_name = sub["name"]
+                    break
+            if matched_subjects:
+                break
+                
+    if not matched_subjects:
+        return None
         
-    marks_list = [entry["marks"] for entry in all_scores]
-    avg_marks = round(sum(marks_list) / len(marks_list), 2)
-    max_marks = max(marks_list)
-    min_marks = min(marks_list)
-    toppers = [entry for entry in all_scores if entry["marks"] == max_marks][:3]
-    fail_count = sum(1 for m in marks_list if m < 40)
+    out = []
+    out.append(f"[OFFICIAL SUBJECT & DOMAIN ACADEMIC ANALYTICS: {domain_name.upper()}]")
+    out.append(f"Curriculum Scope: {len(matched_subjects)} Course(s) across all 200 Candidates in CSE Cohort")
+    out.append(f"Courses Evaluated: {', '.join(matched_subjects)}\n")
     
-    return {
-        "subject_name": matching_subject_name,
-        "total_appeared": len(all_scores),
-        "average_marks": avg_marks,
-        "highest_marks": max_marks,
-        "lowest_marks": min_marks,
-        "subject_toppers": [{"usn": t["student_usn"], "name": t["student_name"], "marks": t["marks"]} for t in toppers],
-        "pass_rate": round(((len(all_scores) - fail_count) / len(all_scores)) * 100, 2),
-        "failures_count": fail_count
-    }
+    # 3. Overall Domain Aggregation (when domain has multiple courses, e.g. Mathematics, AI, Labs)
+    if len(matched_subjects) > 1:
+        student_aggs = []
+        for s in students:
+            scores = []
+            for sm in s["semesters"].values():
+                for sub in sm["subjects"]:
+                    if sub["name"] in matched_subjects:
+                        scores.append({"name": sub["name"], "marks": sub["marks"], "grade": sub["grade"]})
+            if scores:
+                avg_m = round(sum(x["marks"] for x in scores) / len(scores), 2)
+                student_aggs.append({"usn": s["usn"], "name": s["name"], "avg": avg_m, "scores": scores, "cgpa": s["cgpa"]})
+                
+        student_aggs.sort(key=lambda x: x["avg"], reverse=True)
+        
+        out.append(f"TOP PERFORMERS OVERALL IN {domain_name.upper()} (Combined Average across all {len(matched_subjects)} courses):")
+        for idx, st in enumerate(student_aggs[:5], 1):
+            sc_details = ", ".join([f"{sc['name']}: {sc['marks']}/100 ({sc['grade']})" for sc in st["scores"]])
+            out.append(f"Rank #{idx}: {st['name']} (USN: {st['usn']}) - Combined Average: {st['avg']}% | CGPA: {st['cgpa']:.2f} [{sc_details}]")
+        out.append("")
+        
+    # 4. Course-by-Course Detailed Performance and Toppers
+    out.append("COURSE-BY-COURSE DETAILED PERFORMANCE & TOPPERS:")
+    for sub_name in matched_subjects:
+        all_scores = []
+        sub_code = ""
+        sub_sem = ""
+        for s in students:
+            for sm_idx, sm in s["semesters"].items():
+                for sub in sm["subjects"]:
+                    if sub["name"] == sub_name:
+                        sub_code = sub["code"]
+                        sub_sem = sm_idx
+                        all_scores.append({"usn": s["usn"], "name": s["name"], "marks": sub["marks"], "grade": sub["grade"]})
+                        
+        if not all_scores:
+            continue
+            
+        all_scores.sort(key=lambda x: x["marks"], reverse=True)
+        marks_vals = [x["marks"] for x in all_scores]
+        avg_score = round(sum(marks_vals) / len(marks_vals), 2)
+        max_score = marks_vals[0]
+        min_score = marks_vals[-1]
+        toppers = [x for x in all_scores if x["marks"] == max_score]
+        fail_cnt = sum(1 for m in marks_vals if m < 40)
+        pass_pct = round(((len(marks_vals) - fail_cnt) / len(marks_vals)) * 100, 2)
+        
+        top_str = ", ".join([f"{t['name']} (USN: {t['usn']})" for t in toppers[:3]])
+        out.append(f"- Course: {sub_name} (Code: {sub_code}, Semester {sub_sem})")
+        out.append(f"  * Highest Score Achieved: {max_score}/100 by: {top_str}")
+        out.append(f"  * Class Average: {avg_score}/100 | Lowest Score: {min_score}/100 | Pass Rate: {pass_pct}% ({fail_cnt} backlogs)")
+        top_3_str = ", ".join([f"#{i} {st['name']} ({st['usn']}): {st['marks']}/100 ({st['grade']})" for i, st in enumerate(all_scores[:3], 1)])
+        out.append(f"  * Top 3 Scorers: {top_3_str}")
+        
+    return "\n".join(out)
+
+def get_subject_analytics(subject_query: str) -> Dict[str, Any]:
+    """Backward-compatible analytics helper."""
+    report = get_subject_or_domain_analytics(subject_query)
+    return {"report": report} if report else {"error": f"No subject matching '{subject_query}' found."}
 
 def compare_students(id1: str, id2: str) -> Dict[str, Any]:
     """Compare two students side-by-side."""
