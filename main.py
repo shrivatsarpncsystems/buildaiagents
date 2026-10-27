@@ -36,6 +36,11 @@ STRICT INSTRUCTIONS FOR YOUR RESPONSE:
 4. DIRECT & ACCURATE ANSWER FORMATTING:
    - For semester toppers (e.g. "top 10 students in 3rd semester"), present the ranked list strictly by their Semester SGPA, showing Rank, Name, USN, and SGPA.
    - For failed students or their marks, ALWAYS list the student name, USN, semester SGPA, and each failed course along with their exact marks obtained out of 100 and Grade F (e.g. "Deepak Reddy (1RV21CS180) - Engineering Chemistry: 30/100 (Grade: F)").
+   - For individual student semester marks / scores / percentages:
+     You MUST output ALL of the following:
+     a. Candidate Header: Student Name, USN, and Semester SGPA.
+     b. Individual Course Breakdown: List EVERY course individually with its name, marks obtained out of 100, individual percentage (e.g. 93.0%), and grade awarded.
+     c. Total Marks & Aggregate Percentage: Clearly state Total Marks Obtained out of maximum marks (e.g. 562 / 600) and the Overall Semester Percentage (e.g. 93.67%).
    - If multiple candidates share the same name (e.g. Divya Bhat), always distinguish them explicitly by USN and rank.
 5. STRICT GROUNDING & REFUSAL: Do NOT invent student marks, ranks, or policies. If the question cannot be answered from the provided records or conversation history (e.g. hostel fees, sports, cafeteria menu), explicitly state:
    "I do not have supporting context in the official college examination records to answer this question."
@@ -207,6 +212,9 @@ def route_and_build_context(user_query: str, history=None):
         "compare", "comparison", "difference", "versus", "vs", "between",
         "who scored higher", "who has higher", "who is better", "which one", "higher cgpa"
     ])
+    is_marks_followup = any(w in q_lower for w in ["mark", "marks", "score", "scores", "grade", "grades"]) and (
+        has_pronoun_reference or any(w in q_lower for w in ["give", "show", "what", "their", "thei", "respectie", "respective"])
+    )
 
     # 1. Comparison of Two Students (Direct USNs or Follow-up referencing recent students)
     target_compare_usns = []
@@ -272,19 +280,30 @@ def route_and_build_context(user_query: str, history=None):
             citations_list.append("[Source: college_exam_results.pdf, Page 1]")
             citations_list.append("[Source: students_results.json / Autonomous Examination Database]")
 
-    # 2. Check for Specific Student Semester Detailed Transcript (e.g. "What were 1RV21CS028 marks in sem 5")
+    # 2. Check for Specific Student Semester Detailed Transcript & Score/Percentage
     sem_from_query = extract_semester(q_lower)
-    target_st_id = direct_usns[0] if direct_usns else (recent_usns[0] if (has_pronoun_reference and recent_usns) else None)
-    if sem_from_query and target_st_id and not target_compare_usns and any(w in q_lower for w in ["mark", "marks", "subject", "subjects", "grade", "grades", "transcript", "score", "scores", "in sem", "in semester"]):
+    target_st_id = None
+    if direct_usns:
+        target_st_id = direct_usns[0]
+    else:
+        # Check if user query mentions a student name
+        clean_name = re.sub(r"\b(?:sem|semester|semister|semster|s)\s*[-:]?\s*[1-8](?:st|nd|rd|th)?\b", "", q_lower)
+        clean_name = re.sub(r"\b[1-8](?:st|nd|rd|th)?\s*(?:sem|semester|semister|semster|sems)\b", "", clean_name)
+        clean_name = re.sub(r"\b(?:score|scores|marks|mark|percentage|percent|result|results|grade|grades|of|in|for|student|candidate|show|what|calculate|give)\b", " ", clean_name).strip()
+        if clean_name and len(clean_name) >= 3:
+            matched_students = analytics.find_students_by_name(clean_name)
+            if matched_students:
+                target_st_id = matched_students[0]["usn"]
+        if not target_st_id and (has_pronoun_reference and recent_usns):
+            target_st_id = recent_usns[0]
+
+    if sem_from_query and target_st_id and not target_compare_usns:
         additional_data += f"\n{analytics.get_student_semester_breakdown(target_st_id, sem_from_query)}\n"
         citations_list.append("[Source: students_results.json / Autonomous Examination Database]")
         citations_list.append("[Source: college_exam_results.pdf]")
 
     # 3. Check for Follow-Up Question on Marks for Previously Discussed Failed Students
-    is_marks_followup = any(w in q_lower for w in ["mark", "marks", "score", "scores", "grade", "grades"]) and (
-        has_pronoun_reference or any(w in q_lower for w in ["give", "show", "what", "their", "thei", "respectie", "respective"])
-    )
-    if is_marks_followup and last_intent == "failed_students" and recent_sems:
+    elif is_marks_followup and last_intent == "failed_students" and recent_sems:
         active_sem = recent_sems[0]
         fail_data = analytics.get_failed_students(semester=active_sem)
         additional_data += f"\n[OFFICIAL CANDIDATES WHO FAILED IN SEMESTER {active_sem} - EXACT SUBJECT MARKS & GRADES]:\n"
@@ -330,7 +349,7 @@ def route_and_build_context(user_query: str, history=None):
             citations_list.append("[Source: college_exam_results.pdf]")
 
     # 7. Single Student Scorecard Lookup (Direct USN or Follow-up pronoun)
-    elif len(direct_usns) == 1 or (has_pronoun_reference and len(recent_usns) >= 1 and not is_policy_query and not is_marks_followup):
+    elif not additional_data and (len(direct_usns) == 1 or (has_pronoun_reference and len(recent_usns) >= 1 and not is_policy_query and not is_marks_followup)):
         target_usn = direct_usns[0] if direct_usns else recent_usns[0]
         st = analytics.find_student(target_usn)
         if st:
@@ -347,14 +366,16 @@ def route_and_build_context(user_query: str, history=None):
                 citations_list.append("[Source: students_results.json / Autonomous Examination Database]")
 
     # 8. Check for Subject / Domain Academic Analytics (e.g. "Who is best at maths overall", "ML toppers", "OS average")
-    subj_data = analytics.get_subject_or_domain_analytics(q_lower)
-    if subj_data:
-        additional_data += f"\n{subj_data}\n"
-        citations_list.append("[Source: students_results.json / Autonomous Examination Database]")
-        citations_list.append("[Source: college_exam_results.pdf]")
+    subj_data = None
+    if not additional_data:
+        subj_data = analytics.get_subject_or_domain_analytics(q_lower)
+        if subj_data:
+            additional_data += f"\n{subj_data}\n"
+            citations_list.append("[Source: students_results.json / Autonomous Examination Database]")
+            citations_list.append("[Source: college_exam_results.pdf]")
 
     # 9. Name Search (Detecting if multiple students share that name)
-    elif not any(w in q_lower for w in ["top", "average", "class", "policy", "grade", "menu", "fee", "compare", "fail", "arrear", "topper", "best", "highest", "lowest", "placement", "graduation"]):
+    elif not additional_data and not any(w in q_lower for w in ["top", "average", "class", "policy", "grade", "menu", "fee", "compare", "fail", "arrear", "topper", "best", "highest", "lowest", "placement", "graduation"]):
         name_matches = analytics.find_students_by_name(user_query)
         if len(name_matches) > 1:
             additional_data += f"\n[MULTIPLE CANDIDATES SHARING NAME '{user_query}' ({len(name_matches)} Students)]:\n"

@@ -112,10 +112,20 @@ def find_students_by_name(name: str) -> List[Dict[str, Any]]:
             results.extend(name_map[c])
         return results
         
-    # 4. Token match with fallback
-    tokens = [tok for tok in q.split() if len(tok) >= 3]
+    # 4. Token match with fallback (filtering out common conversational English words)
+    STOP_WORDS = {
+        "and", "the", "for", "with", "from", "can", "you", "give", "show", 
+        "what", "tell", "score", "scores", "marks", "mark", "grade", "grades",
+        "sem", "semester", "semister", "semster", "sems", "student", "students", 
+        "candidate", "candidates", "who", "which", "calculate", "calculatemarks",
+        "percentage", "percent", "format", "formatt", "if", "ask", "particular",
+        "every", "eery", "subject", "subjects", "individually", "indiidulally",
+        "well", "total", "please", "how", "much", "did", "get", "got", "obtain",
+        "obtained", "result", "results", "about", "also", "both", "all"
+    }
+    tokens = [tok for tok in q.split() if len(tok) >= 3 and tok not in STOP_WORDS]
     if tokens:
-        matches = [s for s in students if any(tok in s["name"].lower() for tok in tokens)]
+        matches = [s for s in students if any(tok in [part.lower() for part in s["name"].split()] for tok in tokens)]
         if matches:
             return matches
             
@@ -518,7 +528,10 @@ def get_failed_students(semester: Optional[int] = None) -> Dict[str, Any]:
         }
 
 def get_student_semester_breakdown(identifier: str, semester: int) -> str:
-    """Detailed semester transcript breakdown with individual course marks, credits, and grades."""
+    """
+    Detailed semester transcript breakdown with individual course marks,
+    individual percentages, total marks obtained, and overall semester percentage.
+    """
     st = find_student(identifier)
     if not st:
         return f"Student '{identifier}' not found in college examination records."
@@ -526,14 +539,33 @@ def get_student_semester_breakdown(identifier: str, semester: int) -> str:
     if sem_str not in st["semesters"]:
         return f"Semester {semester} not found for student {st['name']} ({st['usn']})."
     sem = st["semesters"][sem_str]
+    subs = sem["subjects"]
+    
+    total_obtained = sum(sub["marks"] for sub in subs)
+    total_max = len(subs) * 100
+    sem_percentage = round((total_obtained / total_max) * 100, 2)
+    has_backlogs = any(sub["grade"] == "F" for sub in subs)
+    
     out = [
-        f"[OFFICIAL SEMESTER {semester} TRANSCRIPT BREAKDOWN: {st['name']} ({st['usn']})]",
-        f"Program: B.Tech Computer Science & Engineering | Batch: 2021-2025 | Class Rank: #{st['rank']}",
-        f"Semester {semester} SGPA: {sem['sgpa']:.2f} / 10.0 | Cumulative CGPA: {st['cgpa']:.2f} | Credits Earned: {sem['credits']:.1f}\n",
-        "Individual Course Performance:"
+        f"[OFFICIAL SEMESTER {semester} TRANSCRIPT & MARKS AUDIT: {st['name']} ({st['usn']})]",
+        f"Program: B.Tech Computer Science & Engineering | Cohort Rank: #{st['rank']} of 200 Candidates",
+        f"Semester {semester} SGPA: {sem['sgpa']:.2f} / 10.0 | Cumulative CGPA: {st['cgpa']:.2f} / 10.0",
+        f"Credits Registered & Earned: {sem['credits']:.1f} Credits",
+        f"Semester Result Status: {'ACTIVE ARREARS / BACKLOG' if has_backlogs else 'ALL COURSES CLEARED'}\n",
+        f"SEMESTER MARKS SUMMARY & AGGREGATE PERCENTAGE:",
+        f"• Total Marks Obtained: {total_obtained} / {total_max}",
+        f"• Overall Semester Percentage: {sem_percentage:.2f}%",
+        f"• Average Subject Score: {sem_percentage:.2f} / 100\n",
+        "INDIVIDUAL COURSE MARKS & PERCENTAGE BREAKDOWN:"
     ]
-    for sub in sem["subjects"]:
-        out.append(f"- {sub['code']} {sub['name']} ({sub['credits']} Credits): {sub['marks']}/100 | Grade: {sub['grade']} (Grade Point: {sub['grade_point']})")
+    for sub in subs:
+        sub_pct = (sub["marks"] / 100.0) * 100.0
+        status = "PASS" if sub["grade"] != "F" else "FAIL (ARREAR)"
+        out.append(
+            f"- {sub['code']} {sub['name']} ({sub['credits']} Credits):\n"
+            f"  * Marks Obtained: {sub['marks']} / 100 ({sub_pct:.1f}%)\n"
+            f"  * Grade Awarded : Grade {sub['grade']} (Grade Point: {sub['grade_point']}) | Status: {status}"
+        )
     return "\n".join(out)
 
 def get_placement_eligibility(min_cgpa: float = 7.0, max_backlogs: int = 0, limit: int = 25) -> str:
