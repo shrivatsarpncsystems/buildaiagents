@@ -36,6 +36,16 @@ STRICT INSTRUCTIONS FOR YOUR RESPONSE:
 2. OFFICIAL CALCULATIONS PRECEDENCE: The ACADEMIC CONTEXT contains exact, verified calculations across all 200 students. You MUST use those exact details, marks, ranks, and numbers.
 3. CONVERSATION CONTEXT & PRONOUN RESOLUTION: Use the PREVIOUS CONVERSATION HISTORY solely to resolve pronouns (such as "they", "their", "thei", "them", "both", "he", "she", "these students", "the two students") or follow-up questions referencing students, subjects, or semesters previously discussed.
 4. DIRECT & ACCURATE ANSWER FORMATTING:
+   - For student comparisons (e.g. "Compare student 1RV21CS021 and 1RV21CS008"):
+     You MUST provide a comprehensive, side-by-side comparative analysis:
+     a. Candidate 1 Profile: Full Name, USN, Batch Rank, Cumulative CGPA, Academic Standing, Backlogs, Best/Lowest Semester.
+     b. Candidate 2 Profile: Full Name, USN, Batch Rank, Cumulative CGPA, Academic Standing, Backlogs, Best/Lowest Semester.
+     c. Comparative Summary: Exact CGPA difference, Higher CGPA candidate, Higher Rank candidate, and a side-by-side comparison of their 8-semester SGPA progression. NEVER provide a single-line answer.
+   - For student scorecards & transcripts (e.g. "give me Aditi Verma score card", "scorecard for 1RV21CS021"):
+     You MUST provide the full academic record:
+     a. Student Profile: Full Name, USN, Batch Rank, Cumulative CGPA, Academic Standing, Backlogs, Total Credits, and 8-Semester Marks Average.
+     b. Key Milestones: Best Semester, Lowest Semester, Highest Scoring Course, Lowest Scoring Course.
+     c. Semester Progression: List each semester's SGPA and course-by-course marks obtained out of 100 with grades.
    - For semester toppers (e.g. "top 10 students in 3rd semester"), present the ranked list strictly by their Semester SGPA, showing Rank, Name, USN, and SGPA.
    - For failed students or their marks, ALWAYS list the student name, USN, semester SGPA, and each failed course along with their exact marks obtained out of 100 and Grade F (e.g. "Deepak Reddy (1RV21CS180) - Engineering Chemistry: 30/100 (Grade: F)").
    - For individual student semester marks / scores / percentages:
@@ -135,7 +145,7 @@ def extract_recent_entities(history, max_turns=MAX_HISTORY_TURNS):
         return {"usns": [], "semesters": [], "last_turn_intent": None}
         
     last_turn = history[-1]
-    last_q = last_turn.get("question", "").lower()
+    last_q = (last_turn.get("question") or last_turn.get("query") or "").lower()
     if any(w in last_q for w in ["fail", "failed", "backlog", "backlogs", "arrear", "arrears"]):
         last_turn_intent = "failed_students"
     elif any(w in last_q for w in ["compare", "versus", "vs", "difference"]):
@@ -146,7 +156,9 @@ def extract_recent_entities(history, max_turns=MAX_HISTORY_TURNS):
         last_turn_intent = "placement"
         
     for turn in reversed(history[-max_turns:]):
-        text = f"{turn.get('question', '')} {turn.get('answer', '')}"
+        q_text = turn.get("question") or turn.get("query") or ""
+        a_text = turn.get("answer") or turn.get("response") or ""
+        text = f"{q_text} {a_text}"
         
         # Extract USNs (e.g. 1RV21CS028)
         found_usns = re.findall(r"1rv21cs\d{3}", text, re.IGNORECASE)
@@ -156,7 +168,7 @@ def extract_recent_entities(history, max_turns=MAX_HISTORY_TURNS):
                 recent_usns.append(u_upper)
                 
         # Extract Semesters using robust extractor
-        q_sem = extract_semester(turn.get("question", ""))
+        q_sem = extract_semester(q_text)
         if q_sem and q_sem not in recent_sems:
             recent_sems.append(q_sem)
         a_sems = re.findall(r"(?:sem|semester)\s*([1-8])", text, re.IGNORECASE)
@@ -355,22 +367,43 @@ def route_and_build_context(user_query: str, history=None, show_graph: bool = Tr
             citations_list.append("[Source: students_results.json / Autonomous Examination Database]")
             citations_list.append("[Source: college_exam_results.pdf]")
 
-    # 7. Single Student Scorecard Lookup (Direct USN or Follow-up pronoun)
-    elif not additional_data and (len(direct_usns) == 1 or (has_pronoun_reference and len(recent_usns) >= 1 and not is_policy_query and not is_marks_followup)):
-        target_usn = direct_usns[0] if direct_usns else recent_usns[0]
-        st = analytics.find_student(target_usn)
-        if st:
-            sc = analytics.get_student_scorecard(target_usn)
-            if "error" not in sc:
-                additional_data += f"\n[OFFICIAL SCORECARD FOR {sc['name']} ({sc['usn']})]:\n"
-                additional_data += f"Official Name: {sc['name']} | USN: {sc['usn']}\n"
-                additional_data += f"Rank: #{sc['rank']} of 200 Candidates | Standing: {sc['standing']}\n"
-                additional_data += f"Cumulative CGPA: {sc['cgpa']:.2f} / 10.0 | Active Backlogs: {sc['backlogs']}\n"
-                additional_data += f"Total Credits: {sc['total_credits']} | 8-Semester Marks Average: {sc['average_marks']}/100\n"
-                additional_data += f"SGPA by Semester: {json.dumps(sc['sgpa_by_semester'])}\n"
-                additional_data += f"Best Semester: {sc['best_semester']} | Lowest: {sc['lowest_semester']}\n"
-                additional_data += f"Highest Subject: {sc['highest_subject']} | Lowest: {sc['lowest_subject']}\n"
-                citations_list.append("[Source: students_results.json / Autonomous Examination Database]")
+    # 7. Single Student Scorecard Lookup (Direct USN, Name search, or Follow-up pronoun)
+    if not additional_data:
+        is_scorecard_query = any(w in q_lower for w in ["scorecard", "score card", "profile", "record", "all semester", "all sem", "marks average", "performance"])
+        target_scorecard_usn = None
+        
+        if direct_usns:
+            target_scorecard_usn = direct_usns[0]
+        elif is_scorecard_query or has_followup_reference:
+            clean_name = re.sub(r"\b(?:gie|give|show|what|is|the|me|scorecard|score|card|profile|details|transcript|record|of|for|student|candidate|please|get)\b", " ", q_lower).strip()
+            if clean_name and len(clean_name) >= 3:
+                matched_cand = analytics.find_student(clean_name, recent_usns=recent_usns)
+                if matched_cand:
+                    target_scorecard_usn = matched_cand["usn"]
+            if not target_scorecard_usn and recent_usns and (is_scorecard_query or has_followup_reference):
+                target_scorecard_usn = recent_usns[0]
+
+        if target_scorecard_usn:
+            st = analytics.find_student(target_scorecard_usn)
+            if st:
+                sc = analytics.get_student_scorecard(target_scorecard_usn)
+                if "error" not in sc:
+                    additional_data += f"\n[OFFICIAL ACADEMIC SCORECARD FOR {sc['name']} ({sc['usn']})]:\n"
+                    additional_data += f"Official Name: {sc['name']} | University Seat Number (USN): {sc['usn']}\n"
+                    additional_data += f"Cohort Class Rank: #{sc['rank']} of 200 Candidates | Academic Standing: {sc['standing']}\n"
+                    additional_data += f"Final Cumulative CGPA: {sc['cgpa']:.2f} / 10.0 | Active Backlogs: {sc['backlogs']}\n"
+                    additional_data += f"Total Credits Earned: {sc['total_credits']} / 136.5 | 8-Semester Marks Average: {sc['average_marks']}/100\n"
+                    additional_data += f"Semester SGPA Progression: {json.dumps(sc['sgpa_by_semester'])}\n"
+                    additional_data += f"Best Semester: {sc['best_semester']} | Lowest: {sc['lowest_semester']}\n"
+                    additional_data += f"Highest Scoring Course: {sc['highest_subject']}\n"
+                    additional_data += f"Lowest Scoring Course: {sc['lowest_subject']}\n\n"
+                    additional_data += f"COMPLETE 8-SEMESTER OFFICIAL COURSE-BY-COURSE MARKS (FROM DATABASE):\n"
+                    for sm_idx in range(1, 9):
+                        sm_data = st["semesters"][str(sm_idx)]
+                        sub_strs = [f"{s['name']}: {s['marks']}/100 ({s['grade']})" for s in sm_data["subjects"]]
+                        additional_data += f"• Semester {sm_idx} (SGPA: {sm_data['sgpa']:.2f}): {', '.join(sub_strs)}\n"
+                    citations_list.append("[Source: students_results.json / Autonomous Examination Database]")
+                    citations_list.append("[Source: college_exam_results.pdf]")
 
     # 8. Check for Subject / Domain Academic Analytics (e.g. "Who is best at maths overall", "ML toppers", "OS average")
     subj_data = None
@@ -382,8 +415,9 @@ def route_and_build_context(user_query: str, history=None, show_graph: bool = Tr
             citations_list.append("[Source: college_exam_results.pdf]")
 
     # 9. Name Search (Detecting if multiple students share that name)
-    elif not additional_data and not any(w in q_lower for w in ["top", "average", "class", "policy", "grade", "menu", "fee", "compare", "fail", "arrear", "topper", "best", "highest", "lowest", "placement", "graduation"]):
-        name_matches = analytics.find_students_by_name(user_query)
+    if not additional_data and not any(w in q_lower for w in ["top", "average", "class", "policy", "grade", "menu", "fee", "compare", "fail", "arrear", "topper", "best", "highest", "lowest", "placement", "graduation"]):
+        clean_name_q = re.sub(r"\b(?:who|is|tell|me|about|show|profile|details|student|candidate|please)\b", " ", q_lower).strip()
+        name_matches = analytics.find_students_by_name(clean_name_q if len(clean_name_q) >= 3 else user_query)
         if len(name_matches) > 1:
             additional_data += f"\n[MULTIPLE CANDIDATES SHARING NAME '{user_query}' ({len(name_matches)} Students)]:\n"
             for st in name_matches:
@@ -392,12 +426,15 @@ def route_and_build_context(user_query: str, history=None, show_graph: bool = Tr
             citations_list.append("[Source: students_results.json / Autonomous Examination Database]")
         elif len(name_matches) == 1:
             sc = analytics.get_student_scorecard(name_matches[0]["usn"])
+            st = analytics.find_student(name_matches[0]["usn"])
             additional_data += f"\n[OFFICIAL SCORECARD FOR {sc['name']} ({sc['usn']})]:\n"
             additional_data += f"Official Name: {sc['name']} | USN: {sc['usn']}\n"
             additional_data += f"Rank: #{sc['rank']} of 200 Candidates | Standing: {sc['standing']}\n"
             additional_data += f"Cumulative CGPA: {sc['cgpa']:.2f} / 10.0 | Active Backlogs: {sc['backlogs']}\n"
             additional_data += f"Total Credits: {sc['total_credits']} | 8-Semester Marks Average: {sc['average_marks']}/100\n"
             additional_data += f"SGPA by Semester: {json.dumps(sc['sgpa_by_semester'])}\n"
+            additional_data += f"Best Semester: {sc['best_semester']} | Lowest: {sc['lowest_semester']}\n"
+            additional_data += f"Highest Subject: {sc['highest_subject']} | Lowest: {sc['lowest_subject']}\n"
             citations_list.append("[Source: students_results.json / Autonomous Examination Database]")
 
     # 10. Check for Overall Batch Top Scorers / Rank List (Support variable N e.g. top 3, top 5, top 10, toppers)

@@ -112,8 +112,8 @@ def get_top_scorers(n: int = 5, semester: Optional[int] = None) -> Dict[str, Any
             "top_students": results
         }
 
-def find_student(identifier: str) -> Optional[Dict[str, Any]]:
-    """Find a student by USN (e.g. 1RV21CS042) or by full/partial/typo-tolerant name."""
+def find_student(identifier: str, recent_usns: Optional[List[str]] = None) -> Optional[Dict[str, Any]]:
+    """Find a student by USN or name, prioritizing recently discussed candidates in conversation history."""
     students = _load_data()
     q = identifier.strip().lower()
     
@@ -122,7 +122,24 @@ def find_student(identifier: str) -> Optional[Dict[str, Any]]:
         if s["usn"].lower() == q:
             return s
             
-    # 2. Exact, substring, or fuzzy name match
+    # 2. Prioritize recent students from conversation history (resolves typos like 'Aditya Verma' -> 'Aditi Verma')
+    if recent_usns:
+        st_map = {s["usn"]: s for s in students}
+        q_tokens = [tok for tok in q.split() if len(tok) >= 3]
+        for ru in recent_usns:
+            if ru in st_map:
+                cand = st_map[ru]
+                cand_name = cand["name"].lower()
+                cand_parts = cand_name.split()
+                # Check token overlap
+                if any(tok in cand_parts for tok in q_tokens):
+                    return cand
+                # Check fuzzy similarity
+                ratio = difflib.SequenceMatcher(None, q, cand_name).ratio()
+                if ratio >= 0.7:
+                    return cand
+
+    # 3. Exact, substring, or fuzzy name match
     matches = find_students_by_name(identifier)
     if matches:
         return matches[0]
@@ -166,8 +183,9 @@ def find_students_by_name(name: str) -> List[Dict[str, Any]]:
         
     # 4. Token match with fallback (filtering out common conversational English words)
     STOP_WORDS = {
-        "and", "the", "for", "with", "from", "can", "you", "give", "show", 
+        "and", "the", "for", "with", "from", "can", "you", "give", "gie", "show", 
         "what", "tell", "score", "scores", "marks", "mark", "grade", "grades",
+        "card", "cards", "scorecard", "scorecards",
         "sem", "semester", "semister", "semster", "sems", "student", "students", 
         "candidate", "candidates", "who", "which", "calculate", "calculatemarks",
         "percentage", "percent", "format", "formatt", "if", "ask", "particular",
