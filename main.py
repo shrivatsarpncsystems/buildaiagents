@@ -217,7 +217,7 @@ def route_and_build_context(user_query: str, history=None):
     elif (is_compare_intent or (has_pronoun_reference and last_intent == "comparison")) and len(direct_usns) == 0 and len(recent_usns) >= 2:
         target_compare_usns = recent_usns[:2]
 
-    if target_compare_usns and (is_compare_intent or len(direct_usns) >= 2 or any(k in q_lower for k in ["name", "score", "cgpa", "rank", "sem", "grade", "both", "they", "their", "thei", "who", "which"])):
+    if target_compare_usns and (is_compare_intent or len(direct_usns) >= 2 or any(k in q_lower for k in ["name", "score", "cgpa", "rank", "sem", "grade", "both", "they", "their", "who", "which"])):
         u1, u2 = target_compare_usns[0], target_compare_usns[1]
         comp_res = analytics.compare_students(u1, u2)
         st1 = analytics.find_student(u1)
