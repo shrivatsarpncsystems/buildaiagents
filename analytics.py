@@ -463,22 +463,33 @@ def detect_query_ambiguity(query_text: str, history=None) -> Optional[Dict[str, 
         "overall", "combined", "both", "all courses", "all maths", "best at maths overall"
     ])
     
+    # Check if the user already named a specific single course name or code in the curriculum
+    students = _load_data()
+    for sm in range(1, 9):
+        for sub in students[0]["semesters"][str(sm)]["subjects"]:
+            s_name = sub["name"].lower()
+            s_code = sub["code"].lower()
+            if s_name in q or s_code in q:
+                return None
+
     # If user has NOT specified semester, course type, or explicit combined intent:
     if not has_specific_sem and not has_specific_type and not has_explicit_combined:
         for k in sorted(DOMAIN_SUBJECT_MAPPINGS.keys(), key=len, reverse=True):
             pattern = rf"\b{re.escape(k)}\b" if len(k) <= 4 else rf"\b{re.escape(k)}"
             if re.search(pattern, q):
                 courses = DOMAIN_SUBJECT_MAPPINGS[k]
-                if len(courses) > 1:
-                    # Multi-course domain found and underspecified!
-                    course_meta = [get_course_metadata(c) for c in courses]
-                    return {
-                        "type": "multi_course_domain",
-                        "domain_key": k,
-                        "domain_title": k.title(),
-                        "courses": course_meta,
-                        "original_query": query_text
-                    }
+                if len(courses) == 1:
+                    # Specific single course matched, no ambiguity
+                    return None
+                # Multi-course domain found and underspecified!
+                course_meta = [get_course_metadata(c) for c in courses]
+                return {
+                    "type": "multi_course_domain",
+                    "domain_key": k,
+                    "domain_title": k.title(),
+                    "courses": course_meta,
+                    "original_query": query_text
+                }
                     
     # 2. Duplicate candidate name check (e.g. 'show scorecard for Divya Bhat')
     if not any(w in q for w in ["top", "topper", "average", "fail", "placement", "compare", "grade", "distribution"]):
@@ -538,8 +549,8 @@ def format_clarification_question(ambiguity_info: Dict[str, Any]) -> str:
 
 def resolve_clarification_from_history(user_input: str, history=None) -> Optional[str]:
     """
-    Checks if user_input is answering a clarifying counter-question asked in the last turn.
-    Synthesizes the complete, unambiguous query with intent, subject/candidate, and graph options.
+    Dynamically checks if user_input is answering a clarifying counter-question from the previous turn.
+    Works generically for any multi-course domain or duplicate candidate list across the curriculum.
     """
     if not history or len(history) == 0 or not user_input:
         return None
@@ -549,48 +560,86 @@ def resolve_clarification_from_history(user_input: str, history=None) -> Optiona
     last_ans = (last_turn.get("answer") or "").strip()
     inp = user_input.lower().strip()
     
-    # 1. Check if last_ans was asking for multi-course domain clarification
+    # 1. Multi-course domain clarification resolution
     if "which specific course would you like to see" in last_ans.lower():
+        # Dynamically extract all numbered course items from the AI counter question
         course_lines = re.findall(r"(\d+)\.\s+([^\(\n]+)\s+\(([^)]*)\)", last_ans)
         if not course_lines:
             return None
             
-        is_opt1 = any(re.search(rf"\b{re.escape(w)}\b", inp) for w in ["1", "1st", "first", "sem 1", "semester 1", "one"])
-        is_opt2 = any(re.search(rf"\b{re.escape(w)}\b", inp) for w in ["2", "2nd", "second", "sem 2", "semester 2", "two"])
-        is_opt3 = any(re.search(rf"\b{re.escape(w)}\b", inp) for w in ["3", "3rd", "third", "sem 3", "semester 3", "three"])
+        # Dynamically extract domain name from header: "The '...' curriculum covers"
+        dom_match = re.search(r"The '([^']+)' curriculum covers", last_ans, re.IGNORECASE)
+        dom_title = dom_match.group(1).strip() if dom_match else ""
+        
+        selected_course = None
         is_both = any(re.search(rf"\b{re.escape(w)}\b", inp) for w in [
-            "both", "all", "combined", "overall", "together", "everything", str(len(course_lines) + 1)
+            "both", "all", "combined", "overall", "together", "everything"
         ])
         
-        for c in course_lines:
+        # Check if user selected the last "Combined" numbered option
+        combined_opt_num = str(len(course_lines) + 1)
+        if re.search(rf"\b{combined_opt_num}\b", inp):
+            is_both = True
+            
+        # Check numeric selection, word ordinal, semester, theory/lab, or tokens
+        for idx, c in enumerate(course_lines, 1):
+            opt_str = str(idx)
+            ord_words = [w for w, num in WORD_TO_NUM.items() if num == idx]
+            matches_opt = (
+                re.search(rf"\b{opt_str}\b", inp)
+                or re.search(rf"\b{opt_str}(?:st|nd|rd|th)\b", inp)
+                or any(re.search(rf"\b{re.escape(ow)}\b", inp) for ow in ord_words)
+            )
+            
             c_name = c[1].strip()
-            if c_name.lower() in inp or (c[0] == "1" and "math 1" in inp) or (c[0] == "2" and "math 2" in inp):
-                if c[0] == "1":
-                    is_opt1 = True
-                elif c[0] == "2":
-                    is_opt2 = True
-                elif c[0] == "3":
-                    is_opt3 = True
+            meta_str = c[2].lower() if len(c) > 2 else ""
+            c_lower = c_name.lower()
+            
+            # Check semester match from meta (e.g. 'sem 1', 'semester 2')
+            sem_m = re.search(r"\bsem(?:ester)?\s*([1-8])\b", inp)
+            if sem_m and f"semester {sem_m.group(1)}" in meta_str:
+                matches_opt = True
+                
+            # Theory vs Lab semantic matching:
+            # If user asks for 'theory' or 'lecture', select the course without 'lab' or 'laboratory'
+            if any(w in inp for w in ["theory", "lecture"]):
+                if "lab" not in c_lower and "laboratory" not in c_lower:
+                    matches_opt = True
+            # If user asks for 'lab', 'laboratory', or 'practical', select the course with 'lab' or 'laboratory'
+            elif any(w in inp for w in ["lab", "laboratory", "practical"]):
+                if "lab" in c_lower or "laboratory" in c_lower:
+                    matches_opt = True
                     
+            # Special check for project phases: phase 1 vs phase 2
+            if any(w in inp for w in ["phase 1", "phase i"]):
+                if "phase i" in c_lower and "phase ii" not in c_lower:
+                    matches_opt = True
+            elif any(w in inp for w in ["phase 2", "phase ii"]):
+                if "phase ii" in c_lower:
+                    matches_opt = True
+
+            # Check if user mentioned distinguishing keywords from the course name (e.g. 'discrete', 'pattern')
+            c_tokens = [tok.lower() for tok in re.split(r"\W+", c_name) if len(tok) >= 3 and tok.lower() not in ["engineering", "structures", "technologies", "frameworks", "applications", "systems"]]
+            matches_token = any(re.search(rf"\b{re.escape(tok)}\b", inp) for tok in c_tokens)
+            
+            if (matches_opt or matches_token) and not is_both:
+                selected_course = c_name
+                break
+                
         is_graph_needed = any(w in (last_q + " " + user_input).lower() for w in ["graph", "chart", "plot", "bar"])
         graph_suffix = " give graph also" if is_graph_needed else ""
         
+        # Extract intent prefix from last_q (e.g. 'top 5 students', 'top scorer', 'average marks')
         num_m = re.search(r"(top\s*\d+|top scorer|topper|toppers|average|class average|marks|highest|lowest|grade distribution)", last_q, re.IGNORECASE)
         intent_prefix = num_m.group(1) if num_m else "toppers"
         
-        if is_opt1 and len(course_lines) >= 1:
-            target_name = course_lines[0][1].strip()
-            return f"{intent_prefix} in {target_name}{graph_suffix}"
-        elif is_opt2 and len(course_lines) >= 2:
-            target_name = course_lines[1][1].strip()
-            return f"{intent_prefix} in {target_name}{graph_suffix}"
-        elif is_opt3 and len(course_lines) >= 3:
-            target_name = course_lines[2][1].strip()
-            return f"{intent_prefix} in {target_name}{graph_suffix}"
+        if selected_course:
+            return f"{intent_prefix} in {selected_course}{graph_suffix}"
         elif is_both:
-            return f"{intent_prefix} in combined overall {graph_suffix}"
+            domain_label = dom_title if dom_title else "domain"
+            return f"{intent_prefix} in {domain_label} combined overall{graph_suffix}"
 
-    # 2. Check if last_ans was asking for duplicate student name clarification
+    # 2. Duplicate candidate name clarification resolution
     if "which candidate's record would you like to inspect" in last_ans.lower():
         usns = re.findall(r"1RV21CS\d{3}", last_ans, re.IGNORECASE)
         if not usns:
@@ -600,11 +649,18 @@ def resolve_clarification_from_history(user_input: str, history=None) -> Optiona
         target_usn = None
         if direct_match:
             target_usn = direct_match.group(0).upper()
-        elif any(re.search(rf"\b{re.escape(w)}\b", inp) for w in ["1", "1st", "first", "one"]):
-            target_usn = usns[0].upper()
-        elif any(re.search(rf"\b{re.escape(w)}\b", inp) for w in ["2", "2nd", "second", "two"]) and len(usns) >= 2:
-            target_usn = usns[1].upper()
-            
+        else:
+            for idx, u in enumerate(usns, 1):
+                opt_str = str(idx)
+                ord_words = [w for w, num in WORD_TO_NUM.items() if num == idx]
+                if (
+                    re.search(rf"\b{opt_str}\b", inp)
+                    or re.search(rf"\b{opt_str}(?:st|nd|rd|th)\b", inp)
+                    or any(re.search(rf"\b{re.escape(ow)}\b", inp) for ow in ord_words)
+                ):
+                    target_usn = u.upper()
+                    break
+                    
         if target_usn:
             is_graph_needed = any(w in (last_q + " " + user_input).lower() for w in ["graph", "chart", "plot", "bar"])
             graph_suffix = " give graph also" if is_graph_needed else ""
