@@ -65,7 +65,11 @@ STRICT INSTRUCTIONS FOR YOUR RESPONSE:
    - If multiple candidates share the same name (e.g. Divya Bhat), always distinguish them explicitly by USN and rank.
 5. STRICT GROUNDING & REFUSAL: Do NOT invent student marks, ranks, or policies. If the question cannot be answered from the provided records or conversation history (e.g. hostel fees, sports, cafeteria menu), explicitly state:
    "I do not have supporting context in the official college examination records to answer this question."
-6. CITATIONS: Include the source citation at the end of your answer (e.g. "[Source: students_results.json / Autonomous Examination Database]").
+6. ANTI-AMBIGUITY & CONSISTENCY CHECK:
+   - Always compare what the user asked with what data is present in the context before answering.
+   - If user asks for an ambiguous course or ranking without clarification, ask a counter-question instead of guessing.
+   - For course rankings, marks MUST be strictly monotonic in descending order (Rank 1 >= Rank 2 >= Rank 3). Never invert student marks or ranks.
+7. CITATIONS: Include the source citation at the end of your answer (e.g. "[Source: students_results.json / Autonomous Examination Database]").
 
 OFFICIAL RESPONSE:"""
 
@@ -638,12 +642,33 @@ if __name__ == "__main__":
             print_erp_capabilities_menu()
             continue
 
-        if visualizer.is_graph_requested(user_input):
+        # 1. Check if user is answering a previous clarifying counter-question
+        resolved_clarification = analytics.resolve_clarification_from_history(user_input, history=conversation_history)
+        effective_query = resolved_clarification if resolved_clarification else user_input
+        if resolved_clarification:
+            print(f"\n[Interpreting clarification: '{user_input}' -> '{resolved_clarification}']")
+
+        # 2. Check if the query is underspecified or ambiguous (and not already clarified)
+        ambiguity = analytics.detect_query_ambiguity(effective_query, history=conversation_history) if not resolved_clarification else None
+        if ambiguity:
+            clarification_msg = analytics.format_clarification_question(ambiguity)
+            print("\n" + "-" * 78)
+            print(clarification_msg)
+            print("-" * 78 + "\n")
+            
+            # Save clarification turn to conversation history so user's next response can resolve it
+            conversation_history.append({
+                "question": user_input,
+                "answer": clarification_msg
+            })
+            continue
+
+        if visualizer.is_graph_requested(effective_query):
             print("\nSearching PDF transcripts and computing academic visual analytics...")
         else:
             print("\nSearching PDF transcripts and computing analytics...")
 
-        context_str, citations_str = route_and_build_context(user_input, history=conversation_history, show_graph=False)
+        context_str, citations_str = route_and_build_context(effective_query, history=conversation_history, show_graph=False)
         history_str = format_chat_history(conversation_history, k=MAX_HISTORY_TURNS)
 
         print("\n" + "-" * 78)
@@ -653,13 +678,13 @@ if __name__ == "__main__":
             "chat_history": history_str,
             "context": context_str,
             "citations": citations_str,
-            "question": user_input
+            "question": effective_query
         }):
             full_response += chunk
             print(chunk, end="", flush=True)
         print("\n" + "-" * 78)
 
-        if visualizer.is_graph_requested(user_input):
+        if visualizer.is_graph_requested(effective_query):
             # Display graph window AFTER the information text has streamed completely
             visualizer.display_latest_chart()
             print("📊 Interactive graph displayed on screen and saved to charts/ directory.\n")

@@ -417,6 +417,201 @@ DOMAIN_SUBJECT_MAPPINGS = {
     "seminar": ["Technical Seminar & Paper Publication"],
 }
 
+def get_course_metadata(course_name: str) -> Dict[str, Any]:
+    """Retrieve official course code, semester, and credits for a course name."""
+    students = _load_data()
+    for sm in range(1, 9):
+        for sub in students[0]["semesters"][str(sm)]["subjects"]:
+            if sub["name"].lower() == course_name.lower():
+                return {
+                    "name": sub["name"],
+                    "code": sub["code"],
+                    "semester": sm,
+                    "credits": sub.get("credits", 4)
+                }
+    return {"name": course_name, "code": "N/A", "semester": "N/A", "credits": 4}
+
+def detect_query_ambiguity(query_text: str, history=None) -> Optional[Dict[str, Any]]:
+    """
+    Detects if a user query is underspecified, ambiguous, or lacks crucial parameters
+    (e.g., 'top scorer in maths', 'top 5 students in engineering maths', 'who topped machine learning',
+    or a student name shared by multiple candidates).
+    Returns an ambiguity descriptor dict with numbered clarification options, or None if query is clear.
+    """
+    if not query_text:
+        return None
+    q = query_text.lower().strip()
+    
+    # 0. Check if this query is already a clarification response to a previous counter-question
+    if history and len(history) > 0:
+        last_turn = history[-1]
+        last_ans = last_turn.get("answer", "")
+        if any(phrase in last_ans.lower() for phrase in [
+            "which specific course", "which candidate's record", "which one would you like"
+        ]):
+            # This is an answer to a clarification question; do not treat as new ambiguity
+            return None
+
+    # 1. Multi-course domain check (e.g. 'maths', 'engineering maths', 'machine learning', 'web')
+    sem = extract_semester(q)
+    has_specific_sem = (sem is not None)
+    has_specific_type = any(w in q for w in [
+        "theory", "lab", "laboratory", "phase 1", "phase 2", "phase i", "phase ii",
+        "m1", "m2", "math 1", "math 2", "maths 1", "maths 2", "dms"
+    ])
+    has_explicit_combined = any(w in q for w in [
+        "overall", "combined", "both", "all courses", "all maths", "best at maths overall"
+    ])
+    
+    # If user has NOT specified semester, course type, or explicit combined intent:
+    if not has_specific_sem and not has_specific_type and not has_explicit_combined:
+        for k in sorted(DOMAIN_SUBJECT_MAPPINGS.keys(), key=len, reverse=True):
+            pattern = rf"\b{re.escape(k)}\b" if len(k) <= 4 else rf"\b{re.escape(k)}"
+            if re.search(pattern, q):
+                courses = DOMAIN_SUBJECT_MAPPINGS[k]
+                if len(courses) > 1:
+                    # Multi-course domain found and underspecified!
+                    course_meta = [get_course_metadata(c) for c in courses]
+                    return {
+                        "type": "multi_course_domain",
+                        "domain_key": k,
+                        "domain_title": k.title(),
+                        "courses": course_meta,
+                        "original_query": query_text
+                    }
+                    
+    # 2. Duplicate candidate name check (e.g. 'show scorecard for Divya Bhat')
+    if not any(w in q for w in ["top", "topper", "average", "fail", "placement", "compare", "grade", "distribution"]):
+        clean_name = re.sub(r"\b(?:who|is|tell|me|about|show|profile|details|student|candidate|scorecard|score|card|transcript|record|of|for|please)\b", " ", q).strip()
+        if len(clean_name) >= 3 and not re.search(r"1rv21cs\d{3}", q):
+            exact_matches = find_students_by_name(clean_name)
+            # Filter to candidates whose exact full name matches
+            exact_cands = [s for s in exact_matches if s["name"].lower() == clean_name.lower()]
+            if len(exact_cands) > 1:
+                return {
+                    "type": "duplicate_name",
+                    "name": clean_name.title(),
+                    "candidates": exact_cands,
+                    "original_query": query_text
+                }
+                
+    return None
+
+def format_clarification_question(ambiguity_info: Dict[str, Any]) -> str:
+    """Format an interactive, polite clarifying counter-question with clear numbered options."""
+    a_type = ambiguity_info.get("type")
+    
+    if a_type == "multi_course_domain":
+        dom_title = ambiguity_info.get("domain_title", "Subject")
+        courses = ambiguity_info.get("courses", [])
+        
+        lines = [
+            f"The '{dom_title}' curriculum covers {len(courses)} separate courses across semesters:",
+            ""
+        ]
+        for idx, c in enumerate(courses, 1):
+            sem_info = f"Semester {c['semester']}" if c['semester'] != 'N/A' else "Curriculum"
+            code_info = f"Course Code: {c['code']}" if c['code'] != 'N/A' else ""
+            paren = " | ".join(filter(None, [sem_info, code_info]))
+            lines.append(f"{idx}. {c['name']} ({paren})")
+            
+        combined_idx = len(courses) + 1
+        lines.append(f"{combined_idx}. Combined Overall Performance (Across all {dom_title} courses)")
+        lines.append("")
+        lines.append(f"Which specific course would you like to see (e.g., type '1', '2', or 'both')?")
+        return "\n".join(lines)
+        
+    elif a_type == "duplicate_name":
+        name = ambiguity_info.get("name", "Student")
+        cands = ambiguity_info.get("candidates", [])
+        lines = [
+            f"There are {len(cands)} candidates named '{name}' in the B.Tech CSE cohort:",
+            ""
+        ]
+        for idx, c in enumerate(cands, 1):
+            lines.append(f"{idx}. {c['name']} (USN: {c['usn']} | Batch Rank: #{c['rank']} | CGPA: {c['cgpa']:.2f} | Standing: {c['standing']})")
+        lines.append("")
+        lines.append(f"Which candidate's record would you like to inspect (e.g., type '1', '2', or the USN)?")
+        return "\n".join(lines)
+        
+    return "Could you please clarify your question with more specific details?"
+
+def resolve_clarification_from_history(user_input: str, history=None) -> Optional[str]:
+    """
+    Checks if user_input is answering a clarifying counter-question asked in the last turn.
+    Synthesizes the complete, unambiguous query with intent, subject/candidate, and graph options.
+    """
+    if not history or len(history) == 0 or not user_input:
+        return None
+        
+    last_turn = history[-1]
+    last_q = (last_turn.get("question") or "").strip()
+    last_ans = (last_turn.get("answer") or "").strip()
+    inp = user_input.lower().strip()
+    
+    # 1. Check if last_ans was asking for multi-course domain clarification
+    if "which specific course would you like to see" in last_ans.lower():
+        course_lines = re.findall(r"(\d+)\.\s+([^\(\n]+)\s+\(([^)]*)\)", last_ans)
+        if not course_lines:
+            return None
+            
+        is_opt1 = any(re.search(rf"\b{re.escape(w)}\b", inp) for w in ["1", "1st", "first", "sem 1", "semester 1", "one"])
+        is_opt2 = any(re.search(rf"\b{re.escape(w)}\b", inp) for w in ["2", "2nd", "second", "sem 2", "semester 2", "two"])
+        is_opt3 = any(re.search(rf"\b{re.escape(w)}\b", inp) for w in ["3", "3rd", "third", "sem 3", "semester 3", "three"])
+        is_both = any(re.search(rf"\b{re.escape(w)}\b", inp) for w in [
+            "both", "all", "combined", "overall", "together", "everything", str(len(course_lines) + 1)
+        ])
+        
+        for c in course_lines:
+            c_name = c[1].strip()
+            if c_name.lower() in inp or (c[0] == "1" and "math 1" in inp) or (c[0] == "2" and "math 2" in inp):
+                if c[0] == "1":
+                    is_opt1 = True
+                elif c[0] == "2":
+                    is_opt2 = True
+                elif c[0] == "3":
+                    is_opt3 = True
+                    
+        is_graph_needed = any(w in (last_q + " " + user_input).lower() for w in ["graph", "chart", "plot", "bar"])
+        graph_suffix = " give graph also" if is_graph_needed else ""
+        
+        num_m = re.search(r"(top\s*\d+|top scorer|topper|toppers|average|class average|marks|highest|lowest|grade distribution)", last_q, re.IGNORECASE)
+        intent_prefix = num_m.group(1) if num_m else "toppers"
+        
+        if is_opt1 and len(course_lines) >= 1:
+            target_name = course_lines[0][1].strip()
+            return f"{intent_prefix} in {target_name}{graph_suffix}"
+        elif is_opt2 and len(course_lines) >= 2:
+            target_name = course_lines[1][1].strip()
+            return f"{intent_prefix} in {target_name}{graph_suffix}"
+        elif is_opt3 and len(course_lines) >= 3:
+            target_name = course_lines[2][1].strip()
+            return f"{intent_prefix} in {target_name}{graph_suffix}"
+        elif is_both:
+            return f"{intent_prefix} in combined overall {graph_suffix}"
+
+    # 2. Check if last_ans was asking for duplicate student name clarification
+    if "which candidate's record would you like to inspect" in last_ans.lower():
+        usns = re.findall(r"1RV21CS\d{3}", last_ans, re.IGNORECASE)
+        if not usns:
+            return None
+            
+        direct_match = re.search(r"1rv21cs\d{3}", inp, re.IGNORECASE)
+        target_usn = None
+        if direct_match:
+            target_usn = direct_match.group(0).upper()
+        elif any(re.search(rf"\b{re.escape(w)}\b", inp) for w in ["1", "1st", "first", "one"]):
+            target_usn = usns[0].upper()
+        elif any(re.search(rf"\b{re.escape(w)}\b", inp) for w in ["2", "2nd", "second", "two"]) and len(usns) >= 2:
+            target_usn = usns[1].upper()
+            
+        if target_usn:
+            is_graph_needed = any(w in (last_q + " " + user_input).lower() for w in ["graph", "chart", "plot", "bar"])
+            graph_suffix = " give graph also" if is_graph_needed else ""
+            return f"show scorecard for student {target_usn}{graph_suffix}"
+            
+    return None
+
 def get_domain_courses(query: str) -> Optional[Tuple[str, List[str]]]:
     """
     Checks if the query refers to a multi-course academic domain (e.g. 'engineering maths', 'web', 'machine learning').
@@ -436,8 +631,9 @@ def get_domain_courses(query: str) -> Optional[Tuple[str, List[str]]]:
         pattern = rf"\b{re.escape(k)}\b" if len(k) <= 4 else rf"\b{re.escape(k)}"
         if re.search(pattern, q):
             courses = DOMAIN_SUBJECT_MAPPINGS[k]
-            if len(courses) > 1:
-                return (k.title(), courses)
+            if len(courses) == 1:
+                return None  # Specific single course matched, not domain-wide
+            return (k.title(), courses)
     return None
 
 def resolve_subject_name(query: str) -> Optional[str]:
